@@ -1,0 +1,29 @@
+[project]
+name = "ai-infra-platform"
+version = "0.1.0"
+description = "AI infrastructure learning path + capstone benchmark suite"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.9",
+]
+week01 = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",  # [standard] pulls in uvloop + httptools
+    "aiosqlite>=0.20",
+    "aiohttp>=3.10",  # load-test client (httpx was measurably the bottleneck at c=100)
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes (unused imports/vars, undefined names)
+    "I",  # isort (import sorting)
+    "UP", # pyupgrade (modern syntax for the pinned Python version)
+]

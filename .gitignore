@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+.DS_Store
+week01-async-serving/AI Infrastructure Engineering Career Switch Master Roadmap & Strategy.pdf

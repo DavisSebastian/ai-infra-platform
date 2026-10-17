@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 2: The Thin Slice</title>
+<meta name="description" content="What I learned serving a real LLM behind FastAPI: tokens, threads, queues, locks and the bugs that taught me.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
+    --accent: #2f5bea; --accent-soft: #e8eefe;
+    --good: #16794c; --good-soft: #e5f5ec;
+    --warn: #8a5300; --warn-soft: #fff2dc;
+    --bad: #b4261e; --bad-soft: #fde9e7;
+    --java: #7a3fb0; --java-soft: #f1e8fa;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1a1f2a; --text: #e7eaf2; --muted: #98a1b5; --line: #2b3242;
+      --accent: #8aa6ff; --accent-soft: #1f2a4a;
+      --good: #4cc38a; --good-soft: #12301f;
+      --warn: #f0b34a; --warn-soft: #3a2b0e;
+      --bad: #ff7b72; --bad-soft: #3a1613;
+      --java: #c79bf2; --java-soft: #2d1f40;
+      --code-bg: #202636;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; font-size: 0.88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; gap: 40px; padding: 0 20px; }
+  nav.toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 32px 0; font-size: 14.5px; }
+  nav.toc .toc-title { font-weight: 700; margin-bottom: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 12px; }
+  nav.toc a { display: block; padding: 5px 10px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--text); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  main { padding: 40px 0 80px; min-width: 0; }
+
+  .hero { padding: 8px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: 2.5rem; line-height: 1.15; margin: 8px 0 14px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 40em; }
+  h2 { font-size: 1.7rem; margin: 56px 0 6px; letter-spacing: -0.01em; line-height: 1.25; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p { margin: 10px 0; }
+  .sub { color: var(--muted); margin-top: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  .callout { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .callout > b:first-child { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+  .callout p { margin: 4px 0; }
+  .callout.java { background: var(--java-soft); color: var(--text); border-color: color-mix(in srgb, var(--java) 30%, transparent); }
+  .callout.java > b:first-child { color: var(--java); }
+  .callout.measured { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.measured > b:first-child { color: var(--good); }
+  .callout.gotcha { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .callout.gotcha > b:first-child { color: var(--warn); }
+  .callout.bug { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .callout.bug > b:first-child { color: var(--bad); }
+  .callout.idea { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .callout.idea > b:first-child { color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15.5px; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  figure.diagram { margin: 20px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 12px 10px; }
+  figure.diagram figcaption { text-align: center; color: var(--muted); font-size: 14px; padding: 8px 12px 4px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .tl { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 20px 0; }
+  .tl-title { font-weight: 700; margin-bottom: 10px; }
+  .tl-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; margin: 7px 0; }
+  .tl-label { font-size: 13.5px; color: var(--muted); text-align: right; }
+  .tl-track { position: relative; height: 30px; background: var(--code-bg); border-radius: 7px; }
+  .bar { position: absolute; top: 3px; height: 24px; border-radius: 6px; font-size: 12px; line-height: 24px; padding: 0 8px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .bar.blue { background: #2f5bea; } .bar.green { background: #16794c; } .bar.red { background: #c0392b; }
+  .bar.grey { background: #7b8499; } .bar.amber { background: #b9770e; } .bar.purple { background: #7a3fb0; }
+  .tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 6px 0 0 142px; }
+  .tl-note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .marker { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--bad); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; margin-bottom: 2px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+  .steps { list-style: none; counter-reset: s; padding: 0; margin: 16px 0; }
+  .steps li { counter-increment: s; position: relative; padding: 4px 0 12px 46px; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 2px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  .status { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  .status.done { background: var(--good-soft); color: var(--good); }
+  .status.todo { background: var(--code-bg); color: var(--muted); }
+  .status.next { background: var(--warn-soft); color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding-top: 18px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; gap: 0; }
+    nav.toc { display: none; }
+    h1 { font-size: 2rem; }
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-label { text-align: left; }
+    .tl-axis { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Week 2</div>
+  <a href="#big-picture">The big picture</a>
+  <a href="#tokens">1. One token at a time</a>
+  <a href="#chat-format">2. Chat format to numbers</a>
+  <a href="#costs">3. Prompt vs completion</a>
+  <a href="#loading">4. Load once, cache forever</a>
+  <a href="#freeze">5. The freeze bug</a>
+  <a href="#thread-queue">6. Thread + queue fix</a>
+  <a href="#await">7. What await really does</a>
+  <a href="#lock">8. Why a lock?</a>
+  <a href="#lifecycle">9. One request, start to end</a>
+  <a href="#disconnect">10. The disconnect problem</a>
+  <a href="#glossary">Glossary</a>
+  <a href="#progress">Progress and next</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI Infra Platform &middot; Week 2</div>
+  <h1>The Thin Slice: a real LLM behind FastAPI</h1>
+  <p class="lead">Week 1 streamed fake words. This week a real model writes them. Along the way, one slow function
+  froze a whole server, and fixing it taught me how threads, queues, <code>await</code> and locks fit together.</p>
+  <div class="stats">
+    <div class="stat"><b>4.6 s &rarr; 0.00 s</b><span><code>/health</code> latency while generating</span></div>
+    <div class="stat"><b>136 s &rarr; 3 s</b><span>model load, first run vs cached</span></div>
+    <div class="stat"><b>1 at a time</b><span>why the second user waits</span></div>
+    <div class="stat"><b>+4.4 s</b><span>generation that kept running after the client left</span></div>
+  </div>
+</header>
+
+<!-- ============ BIG PICTURE ============ -->
+<section id="big-picture">
+<h2>The big picture</h2>
+<p class="sub">What we are building, in one diagram.</p>
+<p>A small server that hosts an AI model. You send a question, and the answer streams back word by word, like ChatGPT.
+It speaks the same API format as OpenAI (<code>/v1/chat/completions</code>), so later weeks can swap in vLLM without changing the client.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  C["Client: curl or load test"] <-->|"request in, SSE word stream out"| API
+  subgraph Server["Week 2 server (one process)"]
+    API["FastAPI<br/>event loop thread"]
+    T["Generation thread<br/>model.generate()"]
+    Q[("Queue")]
+    API -. "starts" .-> T
+    T -- "words" --> Q
+    Q -- "async for" --> API
+  end
+  T --> M["Model weights in GPU memory"]
+</pre>
+<figcaption>Two threads, one queue. The event loop talks to clients; the generation thread talks to the GPU.</figcaption>
+</figure>
+
+<p>The files, and the Spring-style split between them:</p>
+<div class="table-wrap"><table>
+<tr><th>File</th><th>Role</th><th>Spring analogy</th></tr>
+<tr><td><code>app/model.py</code></td><td>Loads the model, runs generation. Knows nothing about HTTP</td><td><code>@Service</code></td></tr>
+<tr><td><code>app/main.py</code></td><td>The HTTP API: <code>/health</code> and <code>/v1/chat/completions</code></td><td><code>@RestController</code></td></tr>
+<tr><td><code>scripts/hello_model.py</code></td><td>Step 1: talk to the model with no server at all</td><td>a <code>main()</code> scratch class</td></tr>
+</table></div>
+</section>
+
+<!-- ============ 1. TOKENS ============ -->
+<section id="tokens">
+<h2><span class="num">1</span>The model writes one token at a time</h2>
+<p class="sub">The idea everything else builds on.</p>
+<p>An LLM does not write a whole answer in one go. It looks at everything so far, guesses the <b>next token</b>
+(roughly a word or word piece), adds it to the text, and repeats. A 200-token answer means 200 separate passes through the model.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["Text in<br/>'Say hello in five words.'"] --> B["Tokenizer: text to numbers"]
+  B --> C["Model reads ALL tokens so far<br/>and guesses the next one"]
+  C --> D["Append the new token to the list"]
+  D --> E{"End marker or<br/>max_tokens reached?"}
+  E -- "no" --> C
+  E -- "yes" --> F["Tokenizer: numbers back to text"]
+</pre>
+<figcaption>The loop on the left is why streaming exists: each pass produces something you can send right away.</figcaption>
+</figure>
+
+<h3>Two waits, not one</h3>
+<div class="table-wrap"><table>
+<tr><th>Wait</th><th>Name</th><th>What it is</th></tr>
+<tr><td>Until the first word appears</td><td><b>TTFT</b> (time to first token)</td><td>The model reads your whole prompt first. Fixed cost, paid once. Queueing time adds to it</td></tr>
+<tr><td>Between later words</td><td><b>ITL</b> (inter-token latency)</td><td>One full pass through the model per token</td></tr>
+</table></div>
+
+<div class="callout measured"><b>Measured on my Mac</b>
+<p>Same model, same machine: a 10-token answer ran at 47 tokens/s, a 46-token answer at 79 tokens/s. The model did not get slower.
+Each request pays a fixed startup cost (about 0.1 s here) plus about 0.01 s per token, so short answers look slower on average.
+That is why one "tokens/s" number can mislead, and why we measure TTFT and ITL separately.</p></div>
+
+<div class="table-wrap"><table>
+<tr><th>Tokens</th><th>Time (0.1 s + 0.01 s &times; tokens)</th><th>"tokens/s" shown</th><th>Share spent on the fixed cost</th></tr>
+<tr><td>10</td><td>0.2 s</td><td>50</td><td>half</td></tr>
+<tr><td>46</td><td>0.56 s</td><td>82</td><td>about 1/6</td></tr>
+<tr><td>1000</td><td>10.1 s</td><td>99</td><td>about 1%</td></tr>
+</table></div>
+<p>It works like a taxi fare: a fixed fee to get in, then a price per km. A short ride makes the per-km price look high.</p>
+</section>
+
+<!-- ============ 2. CHAT FORMAT ============ -->
+<section id="chat-format">
+<h2><span class="num">2</span>Chat format to numbers</h2>
+<p class="sub">What <code>encode()</code> does, step by step.</p>
+<p>The model only continues text, and only understands numbers. So a chat message goes through two conversions before the model sees it.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["messages<br/>[{role: user, content: 'Say hello...'}]"] -- "1. apply_chat_template" --> B["One long string with special markers"]
+  B -- "2. tokenizer" --> C["List of 35 numbers<br/>[151644, 8948, 198, ...]"]
+  C -- "3. .to(device)" --> D["Numbers on the GPU (a tensor)"]
+</pre>
+</figure>
+
+<h3>Conversion 1: the chat template</h3>
+<p>During training, conversations were written as plain text with marker words showing who speaks. The template rebuilds that layout. This is the real text my 6-word question became:</p>
+<pre><code>&lt;|im_start|&gt;system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Say hello in five words.&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+</code></pre>
+<p>The last line is the cue. The text stops exactly where the assistant starts speaking, so the model's next guess is the first word of the answer
+(that is what <code>add_generation_prompt=True</code> does). The system message was added by the template, not by me.</p>
+<div class="callout idea"><b>Why changing MODEL_ID needs no code change</b>
+<p>Each model family has its own markers (Llama uses <code>&lt;|start_header_id|&gt;</code>, for example). The right template ships inside the model's files,
+so <code>apply_chat_template</code> picks the correct one automatically.</p></div>
+
+<h3>Conversion 2: tokenizing</h3>
+<p>The tokenizer has a fixed dictionary of about 150,000 word pieces, each with an ID. Real output from my run:</p>
+<div class="table-wrap"><table>
+<tr><th>ID</th><th>Piece</th><th>Notice</th></tr>
+<tr><td>45764</td><td><code>'Say'</code></td><td></td></tr>
+<tr><td>23811</td><td><code>' hello'</code></td><td>The leading space belongs to the word</td></tr>
+<tr><td>4236</td><td><code>' five'</code></td><td>Common words are one token</td></tr>
+<tr><td>13</td><td><code>'.'</code></td><td>Punctuation is its own token</td></tr>
+<tr><td>1207 + 16948</td><td><code>' Q'</code> + <code>'wen'</code></td><td>Rarer words get split</td></tr>
+<tr><td>151644</td><td><code>'&lt;|im_start|&gt;'</code></td><td>A whole marker is a single token</td></tr>
+</table></div>
+<p>The same piece always gets the same ID (<code>' are'</code> is 525 both times it appears). 35 numbers in total: that is where <code>prompt_tokens: 35</code> comes from.
+Going backwards is <code>tokenizer.decode(ids)</code>.</p>
+<div class="callout java"><b>Java analogy</b>
+<p>The template is a <code>MessageFormat</code> the model dictates. The tensor is a typed <code>int[][]</code> that can live on a GPU, which is why <code>.to(device)</code> is needed: input and weights must sit on the same hardware.</p></div>
+</section>
+
+<!-- ============ 3. COSTS ============ -->
+<section id="costs">
+<h2><span class="num">3</span>Prompt tokens vs completion tokens</h2>
+<p class="sub">Two halves of one request, priced and timed differently.</p>
+<div class="cards">
+  <div class="card"><b><code>prompt_tokens</code></b><p>Everything that goes <b>in</b>: your question plus the hidden system message and markers. 35 in my example.</p></div>
+  <div class="card"><b><code>completion_tokens</code></b><p>Everything that comes <b>out</b>: the answer the model wrote. 10 in my example.</p></div>
+</div>
+<div class="table-wrap"><table>
+<tr><th></th><th>How it is processed</th><th>Cost</th></tr>
+<tr><td>Prompt</td><td>All at once, in one pass</td><td>Cheap. It is the fixed part of TTFT</td></tr>
+<tr><td>Completion</td><td>One token at a time</td><td>Expensive. Each token is a full pass (ITL)</td></tr>
+</table></div>
+<p>That is why paid APIs charge more per output token than per input token. It also explains why long chats get slower and pricier:
+the server remembers nothing, so the client resends the <b>entire conversation</b> every turn, and <code>prompt_tokens</code> keeps growing.</p>
+<pre><code># what messages looks like after  [m.model_dump() for m in body.messages]
+[{'role': 'system',    'content': 'You are a pirate.'},
+ {'role': 'user',      'content': 'Hi!'},
+ {'role': 'assistant', 'content': 'Arr, hello matey!'},
+ {'role': 'user',      'content': 'What is a GPU?'}]</code></pre>
+<p><code>model_dump()</code> turns each Pydantic object into a plain dict, which is the format the tokenizer expects.</p>
+</section>
+
+<!-- ============ 4. LOADING ============ -->
+<section id="loading">
+<h2><span class="num">4</span>Load once, cache forever</h2>
+<p class="sub">Where the model comes from, and why startup matters.</p>
+<p>There is no separate "download" step. <code>from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")</code> does both jobs:</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["from_pretrained(MODEL_ID)"] --> B{"Files already in<br/>~/.cache/huggingface?"}
+  B -- "yes" --> C["Load from disk<br/>about 3 seconds"]
+  B -- "no" --> D["Download from the Hugging Face Hub<br/>about 136 seconds for 1 GB"]
+  D --> E["Save to the cache"]
+  E --> C
+  C --> F[".to(device): copy weights into GPU memory"]
+</pre>
+</figure>
+<div class="callout java"><b>Java analogy</b><p>Maven checks <code>~/.m2</code> first and only goes to Maven Central when a JAR is missing. Hugging Face Hub is Maven Central for model weights.</p></div>
+<p>The cache holds the tokenizer files (dictionary and chat template), <code>config.json</code>, <code>generation_config.json</code> (default sampling settings, which is why answers vary), and <code>model.safetensors</code> (the weights, the actual "brain").</p>
+<p>In the server, loading happens once in <code>lifespan</code>, before any request is accepted, like a heavy singleton <code>@Bean</code>:</p>
+<pre><code>@asynccontextmanager
+async def lifespan(app):
+    app.state.llm = LLM(MODEL_ID, DEVICE)     # runs once at startup
+    app.state.gen_lock = asyncio.Lock()
+    yield                                      # server handles requests here</code></pre>
+<div class="callout gotcha"><b>DevOps preview (Docker, step 7)</b>
+<p>Inside a container, the cache is lost whenever the container is deleted, so every fresh container would re-download the model. For the 16 GB Llama on a paid GPU box, that hurts. The fix is to keep the cache outside the container as a volume.</p></div>
+<p>Hardware is picked automatically (<code>cuda</code> NVIDIA, <code>mps</code> Apple GPU, <code>cpu</code>). On my Mac the tiny model ran at 37 tokens/s on CPU and 79 on the Apple GPU: only about 2x, because the model is tiny and CPU and GPU share one memory.</p>
+</section>
+
+<!-- ============ 5. FREEZE ============ -->
+<section id="freeze">
+<h2><span class="num">5</span>The freeze bug</h2>
+<p class="sub">Step 2: calling the model directly inside <code>async def</code>.</p>
+<pre><code>@app.post("/v1/chat/completions")
+async def chat_completions(...):
+    result = llm.generate(messages, max_tokens)   # slow, synchronous, never lets go of the thread</code></pre>
+<p>This is Week 1's <code>/blocking</code> endpoint again. <code>async def</code> only helps if the code inside lets go of the thread (at an <code>await</code>).
+<code>generate()</code> never does, so the single event-loop thread is stuck for the whole answer.</p>
+
+<div class="tl">
+  <div class="tl-title">Request A is generating. Request B asks <code>/health</code> at 0.5 s.</div>
+  <div class="tl-row"><span class="tl-label">Event loop thread</span>
+    <div class="tl-track"><span class="bar red" style="left:0;width:96%">stuck inside generate() for the whole answer</span></div></div>
+  <div class="tl-row"><span class="tl-label">/health request</span>
+    <div class="tl-track"><span class="bar grey" style="left:10%;width:86%">waiting... waiting... waiting...</span><span class="bar amber" style="left:96%;width:4%"></span></div></div>
+  <div class="tl-axis"><span>0 s</span><span>request B sent at 0.5 s</span><span>answered at about 5.1 s</span></div>
+</div>
+
+<div class="callout measured"><b>Measured</b>
+<p><code>/health</code> normally answers in about 1 ms. During generation it took <b>4.6 s</b> and, on a second run, <b>4.8 s</b>, even though it does no work.</p></div>
+<div class="callout bug"><b>Why it is worse than slow</b>
+<p>Load balancers and Kubernetes poll <code>/health</code> every few seconds. If it does not answer in time, the server is marked dead and restarted, killing everyone's in-progress answers. One long question can take the whole server down.</p></div>
+</section>
+
+<!-- ============ 6. THREAD + QUEUE ============ -->
+<section id="thread-queue">
+<h2><span class="num">6</span>The fix: a thread and a queue</h2>
+<p class="sub">Step 3: move the slow call to its own thread, and stream the answer.</p>
+<p>The generation thread is the <b>producer</b>: it puts each new word into a queue. The event loop is the <b>consumer</b>: it takes words out and sends them to the client. In between words, it is free.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  subgraph GT["Generation thread"]
+    G["model.generate(streamer=queue)<br/>computes token after token"]
+  end
+  G -- "call_soon_threadsafe(queue.put)" --> Q[("Queue<br/>AsyncTextIteratorStreamer")]
+  Q --> R
+  subgraph EL["Event loop thread"]
+    R["async for piece in stream.text<br/>awaits the next word"]
+    H["Also serves /health<br/>and other requests"]
+  end
+  R -- "SSE: delta event" --> C["Client"]
+</pre>
+</figure>
+
+<h3>One word, in detail</h3>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  participant G as Generation thread
+  participant L as Event loop
+  participant C as Client
+  G->>G: compute token "Hello! "
+  G->>L: call_soon_threadsafe(queue.put, "Hello! ")
+  Note over L: wakes up the parked async for
+  L->>C: data: {delta: {content: "Hello! "}}
+  Note over L: parks again, free for /health
+  G->>G: compute token "How "
+  G->>L: call_soon_threadsafe(queue.put, "How ")
+  L->>C: data: {delta: {content: "How "}}
+</pre>
+<figcaption>The generation thread never touches the queue directly. It leaves a note on the event loop's to-do list, and the event loop adds the word itself.</figcaption>
+</figure>
+
+<div class="callout idea"><b>Why "leave a note" instead of writing to the queue?</b>
+<p>The queue belongs to the event loop thread. If two threads touched it directly they could step on each other. <code>call_soon_threadsafe</code> is the safe doorway.</p></div>
+
+<div class="tl">
+  <div class="tl-title">Same test as before, after the fix</div>
+  <div class="tl-row"><span class="tl-label">Generation thread</span>
+    <div class="tl-track"><span class="bar green" style="left:0;width:96%">generate() running on its own thread</span></div></div>
+  <div class="tl-row"><span class="tl-label">Event loop thread</span>
+    <div class="tl-track">
+      <span class="bar blue" style="left:0;width:3%"></span>
+      <span class="bar blue" style="left:12%;width:3%"></span>
+      <span class="bar blue" style="left:24%;width:3%"></span>
+      <span class="bar purple" style="left:30%;width:3%"></span>
+      <span class="bar blue" style="left:40%;width:3%"></span>
+      <span class="bar blue" style="left:55%;width:3%"></span>
+      <span class="bar blue" style="left:70%;width:3%"></span>
+      <span class="bar blue" style="left:85%;width:3%"></span>
+    </div></div>
+  <p class="tl-note">Blue = sending a word. Purple = answering <code>/health</code> in the gap. Almost all of the time, the event loop is idle and available.</p>
+</div>
+
+<div class="callout measured"><b>Measured</b><p><code>/health</code> during a long generation: <b>4.6 s before, 0.00 to 0.01 s after.</b> Both streaming and non-streaming paths.</p></div>
+
+<h3>Three details that matter</h3>
+<ul>
+  <li><b>Use the <em>async</em> streamer.</b> The plain <code>TextIteratorStreamer</code> has a blocking read. A normal <code>for</code> loop over it freezes the event loop again, even though generation is on another thread. <code>AsyncTextIteratorStreamer</code> is <code>async for</code>-friendly.</li>
+  <li><b>The non-streaming path got a one-line version of the same fix:</b> <code>await asyncio.to_thread(llm.generate, messages, max_tokens)</code>.</li>
+  <li><b>Crash safety net.</b> If <code>generate()</code> crashes (say, out of GPU memory), nothing would put the END marker in the queue and the request would hang forever. The thread catches the error, stores it, and ends the stream itself.</li>
+</ul>
+<div class="callout java"><b>Java analogy</b><p>A worker thread filling a <code>BlockingQueue</code> while a Netty or WebFlux handler reads it, except the reader <em>awaits</em> instead of blocking.</p></div>
+
+<h3>Which thread runs <code>start_stream()</code>?</h3>
+<p>The <b>event loop</b>. Only the thread's target function (<code>_run</code>) runs on the new thread. <code>thread.start()</code> is like pressing the washing machine's start button: you press it quickly, then walk away.</p>
+<pre><code>stream = llm.start_stream(...)      # event loop: encode(), create queue, thread.start()  (about 1 ms)
+                                    #   _run() -> model.generate() runs on the NEW thread (seconds)</code></pre>
+<p>It must run on the event loop because <code>AsyncTextIteratorStreamer</code> records "the running event loop" when created, and the generation thread uses that to deliver words later.</p>
+</section>
+
+<!-- ============ 7. AWAIT ============ -->
+<section id="await">
+<h2><span class="num">7</span>What <code>await</code> really does</h2>
+<p class="sub">Including the confusing nested one, <code>await stream.wait()</code>.</p>
+<p><code>await X</code> does two things at once:</p>
+<div class="table-wrap"><table>
+<tr><th>For this request</th><th>For the server</th></tr>
+<tr><td>"Pause me here until X is finished."</td><td>"The thread is free to serve other requests meanwhile."</td></tr>
+</table></div>
+<p>So it does not mean "skip this". It means <b>"wait for it, without holding the thread hostage"</b>. Think of a waiter who takes your order to the kitchen and serves other tables until your dish is ready.</p>
+
+<h3>Why <code>await stream.wait()</code> exists</h3>
+<p><code>generate()</code> puts the END marker in the queue <em>before</em> it returns. So there is a tiny gap where the endpoint knows the stream ended but the thread has not clocked out yet:</p>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  participant G as Generation thread
+  participant L as stream_chunks (event loop)
+  G->>L: last word "today?"
+  G->>L: END marker (inside generate)
+  Note over L: async for loop ends
+  L->>G: await stream.wait() (join)
+  Note over G: generate() returns,<br/>completion_tokens = 10 is set,<br/>thread finishes
+  G-->>L: thread is done
+  Note over L: safe to read the count, check errors, release the lock
+</pre>
+</figure>
+<p>Without <code>wait()</code>: the <code>finish_reason</code> could be wrong (the token count is not set yet), a crash would go unnoticed, and the lock could be released while the thread is still running. It is a "make sure the worker has clocked out" step, like <code>thread.join()</code> before reading a result.</p>
+
+<h3>The nested await is just function calls</h3>
+<p>It looks confusing, but it is the same as <code>A()</code> calling <code>B()</code> calling <code>C()</code> in Java. Each <code>await</code> says "I cannot continue until the thing below me finishes", and the pause passes up through every level.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["stream_chunks<br/>await stream.wait()"] -- "paused, waiting for wait()" --> B["Stream.wait()<br/>await asyncio.to_thread(thread.join)"]
+  B -- "paused, waiting for to_thread" --> C["Worker thread<br/>runs the BLOCKING thread.join()"]
+  C -. "everyone above is paused" .-> D["Event loop is free:<br/>serves /health and others"]
+</pre>
+</figure>
+<pre><code>async def wait(self):
+    await asyncio.to_thread(self._thread.join)   # not self._thread.join(): that would block the event loop
+    if self.error:
+        raise self.error</code></pre>
+<div class="callout gotcha"><b>The rule of thumb for this whole step</b>
+<p>Blocking call (<code>generate</code>, <code>join</code>, anything slow that is not async)? Put it on a worker thread with <code>asyncio.to_thread</code>, then <code>await</code> it.</p></div>
+</section>
+
+<!-- ============ 8. LOCK ============ -->
+<section id="lock">
+<h2><span class="num">8</span>Why a lock, if there is only one event loop?</h2>
+<p class="sub">One event-loop thread does not mean one request at a time.</p>
+<p>The event loop switches between requests at every <code>await</code>. That is exactly how 500 requests were "in flight" on one thread in Week 1. And <b>each streaming request starts its own generation thread</b>, so without a lock, 16 requests would run 16 <code>generate()</code> calls on one GPU at once.</p>
+<div class="tl">
+  <div class="tl-title">Two requests arrive together</div>
+  <div class="tl-row"><span class="tl-label">GPU, no lock</span>
+    <div class="tl-track"><span class="bar red" style="left:0;width:100%">A and B both running: each slower, memory doubled, may crash</span></div></div>
+  <div class="tl-row"><span class="tl-label">Request A (with lock)</span>
+    <div class="tl-track"><span class="bar green" style="left:0;width:45%">generating</span></div></div>
+  <div class="tl-row"><span class="tl-label">Request B (with lock)</span>
+    <div class="tl-track"><span class="bar grey" style="left:0;width:45%">waiting in line</span><span class="bar green" style="left:45%;width:45%">generating</span></div></div>
+  <div class="tl-row"><span class="tl-label">/health</span>
+    <div class="tl-track"><span class="bar blue" style="left:5%;width:2%"></span><span class="bar blue" style="left:30%;width:2%"></span><span class="bar blue" style="left:60%;width:2%"></span><span class="bar blue" style="left:90%;width:2%"></span></div></div>
+</div>
+<p>The lock protects <b>the GPU and the model</b>, not the event loop. Running two generations at once with plain Hugging Face gives no speedup and risks running out of memory. Serving many users properly means batching them together, which is what vLLM does in Month 3.</p>
+<div class="table-wrap"><table>
+<tr><th></th><th><code>threading.Lock</code></th><th><code>asyncio.Lock</code> (what we use)</th></tr>
+<tr><td>When busy, the waiter...</td><td>Blocks the thread</td><td>Parks (<code>await</code>); the thread stays free</td></tr>
+<tr><td>Effect on the server</td><td>Waiting would freeze <code>/health</code> too</td><td>Waiting is invisible to everyone else</td></tr>
+</table></div>
+<div class="callout measured"><b>Measured</b><p>Two identical requests sent at the same moment: the first finished in <b>0.60 s</b>, the second in <b>1.33 s</b>. The second took about twice as long purely from waiting. With 16 users the last one waits behind 15. That growing wait is Little's Law from Week 1, and the baseline Month 3 will beat.</p></div>
+<div class="callout java"><b>Java analogy</b><p>A Netty event loop in front of one printer. The loop can accept many clients, but print jobs need a <code>Semaphore(1)</code> or the pages get mixed up. The async version just does not block the loop while waiting.</p></div>
+</section>
+
+<!-- ============ 9. LIFECYCLE ============ -->
+<section id="lifecycle">
+<h2><span class="num">9</span>One streaming request, start to end</h2>
+<p class="sub">Everything together, in order.</p>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant L as Event loop
+  participant K as gen_lock
+  participant G as Generation thread
+  C->>L: POST (stream: true)
+  Note over L: route + validate
+  L-->>C: 200 + SSE headers
+  L->>K: async with lock
+  K-->>L: acquired
+  L->>G: start_stream(): thread.start()
+  L-->>C: role event
+  loop each token
+    G-->>L: word via queue
+    L-->>C: delta event
+  end
+  G-->>L: END marker
+  L->>G: await stream.wait()
+  G-->>L: thread finished
+  L->>K: release lock
+  L-->>C: finish_reason, then [DONE]
+</pre>
+</figure>
+<div class="callout gotcha"><b>A surprise in step 3</b>
+<p>When <code>chat_completions()</code> returns the <code>StreamingResponse</code>, <b>zero tokens exist and the lock is not held</b>. Calling <code>stream_chunks(...)</code> only creates a paused generator (like a Reactor <code>Flux</code>: nothing runs until someone subscribes). The work starts when Starlette begins pulling events from it. That is also why a request stuck behind the lock has already received its 200 headers, but no words yet.</p></div>
+<p>What a client sees on the wire (OpenAI streaming format):</p>
+<pre><code>data: {"choices": [{"delta": {"role": "assistant", "content": ""}, "finish_reason": null}]}
+data: {"choices": [{"delta": {"content": "Hello! "}, "finish_reason": null}]}
+data: {"choices": [{"delta": {"content": "How "},    "finish_reason": null}]}
+   ...
+data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+data: [DONE]</code></pre>
+<p>Each event carries only the <b>new</b> piece (<code>delta</code>); the client glues them together. <code>finish_reason</code> is <code>"stop"</code> if the model finished itself, or <code>"length"</code> if it hit <code>max_tokens</code>.
+That cap matters for cost: the server never allows more than <code>MAX_NEW_TOKENS</code>, so one request cannot hold the GPU for minutes.</p>
+</section>
+
+<!-- ============ 10. DISCONNECT ============ -->
+<section id="disconnect">
+<h2><span class="num">10</span>The disconnect problem</h2>
+<p class="sub">Found by measuring. This is what step 4 fixes.</p>
+<p>What happens when the client closes the tab halfway through? My first guess was that <code>wait()</code> would raise an error and notice. That was wrong. I tested it instead of assuming:</p>
+
+<div class="tl">
+  <div class="tl-title">A long generation, client disconnects at t = 3.6 s</div>
+  <div class="tl-row"><span class="tl-label">Client</span>
+    <div class="tl-track"><span class="bar blue" style="left:0;width:33%">connected, receiving words</span><span class="marker" style="left:33%"></span></div></div>
+  <div class="tl-row"><span class="tl-label">Lock</span>
+    <div class="tl-track"><span class="bar purple" style="left:0;width:33%">held</span><span class="bar grey" style="left:33%;width:67%">released, nobody holds it</span></div></div>
+  <div class="tl-row"><span class="tl-label">Generation thread</span>
+    <div class="tl-track"><span class="bar green" style="left:0;width:33%">generating</span><span class="bar red" style="left:33%;width:40%">still generating for nobody (4.4 s)</span></div></div>
+  <div class="tl-axis"><span>2.65 s: generate() starts</span><span>3.64 s: disconnect</span><span>8.08 s: generate() ends</span></div>
+</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["Client disconnects"] --> B["CancelledError raised at the paused<br/>async for in stream_chunks"]
+  B --> C["async with lock exits:<br/>lock RELEASED"]
+  C --> D["await stream.wait() never reached<br/>stream_chunks ends"]
+  D -.-> G["Generation thread was never told.<br/>Keeps computing for nobody"]
+</pre>
+<figcaption>The disconnect lives in the event loop's world. The generation thread lives in a different world and never hears about it.</figcaption>
+</figure>
+
+<p><code>wait()</code> cannot detect it for two reasons: it is never called, and it only raises <code>self.error</code>, which is set when <code>generate()</code> itself crashes. A client leaving is not a crash inside the thread.</p>
+
+<div class="callout bug"><b>Two real problems</b>
+<p><b>1. Wasted GPU time.</b> Here, 4.4 seconds of generation for an answer nobody reads. On a rented GPU you pay for that.</p>
+<p><b>2. The lock lies.</b> It was released at 3.64 s while the thread ran until 8.08 s. A request arriving in that window would start a second <code>generate()</code>, exactly what the lock was meant to prevent.</p></div>
+
+<h3>The plan for step 4</h3>
+<p>A thread cannot be killed from outside. It has to stop itself when asked.</p>
+<ol class="steps">
+  <li>Give each <code>Stream</code> a <b>stop flag</b>.</li>
+  <li>Pass <code>generate()</code> a <b><code>StoppingCriteria</code></b>: a hook it calls after every token, which checks the flag and stops early.</li>
+  <li>In <code>stream_chunks</code>, catch the cancellation and <b>set the flag</b>.</li>
+  <li><b>Wait for the thread to really finish before releasing the lock</b>, so the lock stays honest. (Tricky: that wait happens while the task is being cancelled.)</li>
+</ol>
+<div class="callout java"><b>Java analogy</b><p><code>Thread.interrupt()</code> plus checking <code>Thread.interrupted()</code> inside the loop. You cannot force-stop a thread. You set a flag, and the loop cooperates.</p></div>
+</section>
+
+<!-- ============ GLOSSARY ============ -->
+<section id="glossary">
+<h2>Glossary</h2>
+<div class="table-wrap"><table>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+<tr><td>HF</td><td>Hugging Face: the hub for open models, plus the <code>transformers</code> library that loads and runs them</td></tr>
+<tr><td>Token</td><td>A word or word piece, the unit the model reads and writes. Roughly 3/4 of an English word</td></tr>
+<tr><td>Weights</td><td>The giant file of numbers that is the model. Llama 8B is about 16 GB in bf16</td></tr>
+<tr><td>Chat template</td><td>The model-specific text layout (with marker tokens) that turns messages into a prompt</td></tr>
+<tr><td>TTFT / ITL</td><td>Time to first token / time between tokens</td></tr>
+<tr><td>SSE</td><td>Server-Sent Events: a stream of <code>data: ...</code> lines over one HTTP response</td></tr>
+<tr><td>Event loop</td><td>The one thread that juggles all requests by switching at each <code>await</code></td></tr>
+<tr><td>Blocking call</td><td>A call that holds the thread until done (<code>generate</code>, <code>join</code>, <code>time.sleep</code>)</td></tr>
+<tr><td>Producer / consumer</td><td>One side puts items in a queue, the other takes them out</td></tr>
+<tr><td>Lifespan</td><td>FastAPI's startup/shutdown hook, like a Spring <code>@PostConstruct</code> / <code>@PreDestroy</code></td></tr>
+<tr><td>Device</td><td><code>cuda</code> (NVIDIA), <code>mps</code> (Apple GPU), or <code>cpu</code></td></tr>
+</table></div>
+</section>
+
+<!-- ============ PROGRESS ============ -->
+<section id="progress">
+<h2>Progress and next steps</h2>
+<ol class="steps">
+  <li><b>Talk to the model in a plain script</b><span class="status done">done</span></li>
+  <li><b>Put it in FastAPI, deliberately blocking</b><span class="status done">done</span> &middot; measured the 4.6 s freeze</li>
+  <li><b>Thread + queue + streaming</b><span class="status done">done</span> &middot; <code>/health</code> back to 0.00 s</li>
+  <li><b>Stop generating when the client disconnects</b><span class="status next">next</span></li>
+  <li><b>Measure it</b><span class="status todo">todo</span> &middot; extend the load test with ITL; run 1, 4 and 16 users to see the queue</li>
+  <li><b>Tests and CI</b><span class="status todo">todo</span> &middot; fake model, no GPU in CI</li>
+  <li><b>Docker</b><span class="status todo">todo</span> &middot; multi-stage build, weights and secrets kept out of the image</li>
+  <li><b>GPU run</b><span class="status todo">todo</span> &middot; Llama 3.1 8B on a rented GPU, then shut it down</li>
+</ol>
+
+<h3>Run it yourself</h3>
+<pre><code>uv sync --group week02
+cd week02-thin-slice
+uv run uvicorn app.main:app --port 8000
+
+# streaming
+curl -N localhost:8000/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Write a short poem about servers."}],"max_tokens":150,"stream":true}'
+
+# the freeze test: /health should stay fast while a long answer generates
+curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Write a long story about a robot."}],"max_tokens":500}' > /dev/null &
+sleep 0.5; time curl -s localhost:8000/health</code></pre>
+</section>
+
+<footer>
+  Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
+  Numbers are from a single run on an Apple-silicon Mac with Qwen2.5-0.5B-Instruct, so treat them as illustrations, not benchmarks.
+</footer>
+</main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: mq.matches ? "dark" : "default",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  });
+  mq.addEventListener("change", () => location.reload());
+
+  const links = [...document.querySelectorAll("nav.toc a")];
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        map.get(e.target.id)?.classList.add("active");
+      }
+    }
+  }, { rootMargin: "-10% 0px -80% 0px" });
+  document.querySelectorAll("main section[id]").forEach(s => io.observe(s));
+</script>
+</body>
+</html>

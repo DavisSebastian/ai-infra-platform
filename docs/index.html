@@ -141,7 +141,11 @@
   <a href="#await">7. What await really does</a>
   <a href="#lock">8. Why a lock?</a>
   <a href="#lifecycle">9. One request, start to end</a>
-  <a href="#disconnect">10. The disconnect problem</a>
+  <a href="#disconnect">10. Disconnects, and the fix</a>
+  <a href="#measure">11. Measuring the queue</a>
+  <a href="#tests">12. Tests that can fail</a>
+  <a href="#docker">13. Docker</a>
+  <a href="#ship">14. Getting to a GPU</a>
   <a href="#glossary">Glossary</a>
   <a href="#progress">Progress and next</a>
 </nav>
@@ -150,13 +154,14 @@
 <header class="hero">
   <div class="eyebrow">AI Infra Platform &middot; Week 2</div>
   <h1>The Thin Slice: a real LLM behind FastAPI</h1>
-  <p class="lead">Week 1 streamed fake words. This week a real model writes them. Along the way, one slow function
-  froze a whole server, and fixing it taught me how threads, queues, <code>await</code> and locks fit together.</p>
+  <p class="lead">Week 1 streamed fake words. This week a real model writes them, packaged in Docker and tested in CI.
+  Along the way, one slow function froze a whole server, a disconnect left the GPU working for nobody, and a queue
+  of users turned out to wait longer without the model ever getting slower.</p>
   <div class="stats">
     <div class="stat"><b>4.6 s &rarr; 0.00 s</b><span><code>/health</code> latency while generating</span></div>
-    <div class="stat"><b>136 s &rarr; 3 s</b><span>model load, first run vs cached</span></div>
-    <div class="stat"><b>1 at a time</b><span>why the second user waits</span></div>
-    <div class="stat"><b>+4.4 s</b><span>generation that kept running after the client left</span></div>
+    <div class="stat"><b>32 ms &rarr; 6.6 s</b><span>median wait for the first word, 1 vs 16 users (time between words stayed 12 ms)</span></div>
+    <div class="stat"><b>+4.4 s &rarr; 0</b><span>generation after the client left, before vs after the stop flag</span></div>
+    <div class="stat"><b>111 s &rarr; 4 s</b><span>container start, first run vs cached weights</span></div>
   </div>
 </header>
 
@@ -554,8 +559,8 @@ That cap matters for cost: the server never allows more than <code>MAX_NEW_TOKEN
 
 <!-- ============ 10. DISCONNECT ============ -->
 <section id="disconnect">
-<h2><span class="num">10</span>The disconnect problem</h2>
-<p class="sub">Found by measuring. This is what step 4 fixes.</p>
+<h2><span class="num">10</span>Disconnects, and the fix</h2>
+<p class="sub">Found by measuring, then fixed with a stop flag and a cleanup that survives cancellation.</p>
 <p>What happens when the client closes the tab halfway through? My first guess was that <code>wait()</code> would raise an error and notice. That was wrong. I tested it instead of assuming:</p>
 
 <div class="tl">
@@ -586,15 +591,230 @@ flowchart TD
 <p><b>1. Wasted GPU time.</b> Here, 4.4 seconds of generation for an answer nobody reads. On a rented GPU you pay for that.</p>
 <p><b>2. The lock lies.</b> It was released at 3.64 s while the thread ran until 8.08 s. A request arriving in that window would start a second <code>generate()</code>, exactly what the lock was meant to prevent.</p></div>
 
-<h3>The plan for step 4</h3>
-<p>A thread cannot be killed from outside. It has to stop itself when asked.</p>
+<h3>The fix</h3>
+<p>A thread cannot be killed from outside. It has to stop itself when asked, so the fix has two parts:</p>
 <ol class="steps">
-  <li>Give each <code>Stream</code> a <b>stop flag</b>.</li>
-  <li>Pass <code>generate()</code> a <b><code>StoppingCriteria</code></b>: a hook it calls after every token, which checks the flag and stops early.</li>
-  <li>In <code>stream_chunks</code>, catch the cancellation and <b>set the flag</b>.</li>
-  <li><b>Wait for the thread to really finish before releasing the lock</b>, so the lock stays honest. (Tricky: that wait happens while the task is being cancelled.)</li>
+  <li>A <b>stop flag</b> the thread checks. <code>generate()</code> accepts a <code>StoppingCriteria</code>, a hook it calls after every token. Ours says "stop" once the flag is set.</li>
+  <li>A <b><code>finally</code> block</b> in <code>stream_chunks</code> that sets the flag, then waits for the thread to really finish <em>before</em> the lock is released.</li>
 </ol>
-<div class="callout java"><b>Java analogy</b><p><code>Thread.interrupt()</code> plus checking <code>Thread.interrupted()</code> inside the loop. You cannot force-stop a thread. You set a flag, and the loop cooperates.</p></div>
+<pre><code>class StopWhenSet(StoppingCriteria):
+    def __call__(self, input_ids, scores, **kwargs):
+        return torch.full((input_ids.shape[0],), self.flag.is_set(), ...)   # True means "stop now"
+
+stream = llm.start_stream(messages, max_tokens)
+try:
+    yield ...                          # send events
+    async for piece in stream.text:
+        yield ...
+finally:                               # runs on a normal finish AND on a disconnect
+    stream.cancel()                    # tell the thread to stop (harmless if it already finished)
+    with anyio.CancelScope(shield=True):
+        await stream.wait()            # wait until it really has, then the lock is released</code></pre>
+
+<div class="tl">
+  <div class="tl-title">The same disconnect, after the fix</div>
+  <div class="tl-row"><span class="tl-label">Client</span>
+    <div class="tl-track"><span class="bar blue" style="left:0;width:33%">connected, receiving words</span><span class="marker" style="left:33%"></span></div></div>
+  <div class="tl-row"><span class="tl-label">Generation thread</span>
+    <div class="tl-track"><span class="bar green" style="left:0;width:33%">generating</span><span class="bar amber" style="left:33%;width:3%"></span></div></div>
+  <div class="tl-row"><span class="tl-label">Lock</span>
+    <div class="tl-track"><span class="bar purple" style="left:0;width:36%">held until the thread is gone</span></div></div>
+  <p class="tl-note">The thread notices the flag after its next token (the small amber bar) and exits. Only then is the lock released.</p>
+</div>
+
+<div class="callout measured"><b>Measured</b>
+<p>Before: generation ran <b>4.4 s</b> after the client left. After: it ended at the same instant as the disconnect, and the lock was released only once the thread was gone. A request sent straight after a disconnect started at the exact moment the old generation ended, with no overlap.
+(The long generation was forced with a scratch patch on the 0.5B model, so the size of the waste is illustrative. The behaviour is the point.)</p></div>
+
+<h3>Why <code>shield=True</code>?</h3>
+<p>On a disconnect the request's task is already being cancelled. A plain <code>await</code> inside <code>finally</code> is cancelled again immediately, so the wait is skipped and the lock is released while the thread is still alive. The shield protects that one short wait (about one token's time) from the cancellation.</p>
+<div class="callout measured"><b>Measured, with and without the shield</b>
+<p>Without it, the lock was released while the thread was still alive for about <b>30 ms</b> (one token). A small window, but a second generation could start in it, which is exactly what the lock exists to prevent. With the shield, the lock was released only after the thread had gone. A test now fails if the shield is removed.</p></div>
+<div class="callout java"><b>Java analogy</b><p><code>Thread.interrupt()</code> plus checking <code>Thread.interrupted()</code> inside the loop. You cannot force-stop a thread. You set a flag, and the loop cooperates. The shield is like finishing your <code>finally</code> cleanup even though the caller has already given up.</p></div>
+<div class="callout gotcha"><b>Not covered</b>
+<p>Non-streaming requests don't stop early: Starlette doesn't cancel a normal handler when the client leaves, so <code>generate()</code> runs to the end (the lock stays held until it finishes, so there is no overlap bug, but a client who leaves wastes compute). Streaming is the main path, so I left it.</p></div>
+</section>
+
+<!-- ============ 11. MEASURING ============ -->
+<section id="measure">
+<h2><span class="num">11</span>Measuring the queue</h2>
+<p class="sub">Step 5: how does the server behave when several people use it at once?</p>
+<p>I extended the Week 1 load tester so it can POST a chat request, read the SSE stream line by line, and timestamp every event that carries text. From those timestamps:</p>
+<ul>
+  <li><b>TTFT</b> = the first event with text, minus the request start. Not the first byte: the first event is an empty "role" event.</li>
+  <li><b>ITL</b> (inter-token latency) = the gaps between consecutive text events.</li>
+  <li><b>Tokens/s</b> = text events per second, per user and in total.</li>
+</ul>
+
+<h3>Check the tool before trusting it</h3>
+<p>Same lesson as Week 1's <code>httpx</code> bottleneck: test the measuring tool against something with a known answer. Week 1's <code>/stream</code> sleeps a fixed time between words.</p>
+<div class="table-wrap"><table>
+<tr><th>Server sleeps</th><th>Tool reported TTFT</th><th>Tool reported ITL</th></tr>
+<tr><td>20 ms</td><td>22 ms</td><td>21 ms</td></tr>
+<tr><td>100 ms</td><td>102 ms</td><td>101 ms</td></tr>
+</table></div>
+<div class="callout gotcha"><b>Three traps the tool avoids</b>
+<p><b>1.</b> Reading network chunks (<code>iter_any()</code>) instead of lines: one chunk can hold half an event or three. <b>2.</b> Counting non-word events: the role event, <code>[DONE]</code> and the finish event would add fake near-zero gaps to ITL. <b>3.</b> Not warming up: the first generation was about 3x slower than later ones, so one throwaway request goes first.</p></div>
+
+<h3>The result</h3>
+<p>Qwen 0.5B on a Mac GPU, <code>max_tokens=100</code>, all users arriving at the same moment:</p>
+<div class="table-wrap"><table>
+<tr><th>Users</th><th>TTFT p50</th><th>TTFT max</th><th>ITL mean</th><th>Speed per user</th><th>Total output</th></tr>
+<tr><td>1</td><td><b>32 ms</b></td><td>33 ms</td><td>12 ms</td><td>85 chunks/s</td><td>84 chunks/s</td></tr>
+<tr><td>4</td><td><b>2.1 s</b></td><td>2.2 s</td><td>12 ms</td><td>80 chunks/s</td><td>80 chunks/s</td></tr>
+<tr><td>16</td><td><b>6.6 s</b></td><td><b>11.1 s</b></td><td>12 ms</td><td>81 chunks/s</td><td>80 chunks/s</td></tr>
+</table></div>
+
+<div class="tl">
+  <div class="tl-title">Longest wait for the first word</div>
+  <div class="tl-row"><span class="tl-label">1 user</span>
+    <div class="tl-track"><span class="bar green" style="left:0;width:1%"></span></div></div>
+  <div class="tl-row"><span class="tl-label">4 users</span>
+    <div class="tl-track"><span class="bar amber" style="left:0;width:20%">2.2 s</span></div></div>
+  <div class="tl-row"><span class="tl-label">16 users</span>
+    <div class="tl-track"><span class="bar red" style="left:0;width:100%">11.1 s</span></div></div>
+  <p class="tl-note">Meanwhile the time between words was 12 ms in all three rows. The model never got slower; people just waited in line.</p>
+</div>
+
+<div class="callout idea"><b>How to read it</b>
+<p><b>Speed is flat.</b> ITL and per-user speed don't change, because each generation runs alone.
+<b>Waiting grows.</b> User <em>k</em> waits for the <em>k &minus; 1</em> answers ahead of them, and the last user's wait (11.1 s) is about the whole run (11.2 s) minus their own answer.
+<b>Total output doesn't scale.</b> About 80 chunks/s whether 1 or 16 people ask. That is Little's Law with one worker: more arrivals can only lengthen the line.</p></div>
+<p>This is the "before" picture for Month 3. While decoding, the GPU is mostly waiting on memory, so it could serve many users at once. Continuous batching (vLLM) does that.</p>
+<div class="callout gotcha"><b>Caveats</b>
+<p>Single runs on a 0.5B model on a Mac: the shape of the result is the point, not the numbers. Answer lengths vary (the average was 50 to 76 chunks per request) because the model decides when to stop. And "ITL" is really inter-chunk latency: the streamer emits pieces of text, usually a word, not guaranteed single tokens.</p></div>
+</section>
+
+<!-- ============ 12. TESTS ============ -->
+<section id="tests">
+<h2><span class="num">12</span>Tests that can fail</h2>
+<p class="sub">Step 6: test the concurrency behaviour, with no GPU, and prove the tests catch the bugs.</p>
+<p>CI has no GPU, and installing PyTorch there would pull gigabytes just to test <em>our</em> code. So the model is loaded through a small <code>load_llm()</code> function, which tests replace with a fake. Importing the server no longer loads torch at all. (Spring analogy: <code>@MockBean</code>.)</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+  T["pytest test<br/>httpx client<br/>own event loop"] -- "real HTTP" --> S["real uvicorn + real app<br/>own thread, own event loop"]
+  S --> F["FakeLLM<br/>real threads, no torch"]
+</pre>
+<figcaption>The server runs in its own thread, so a bug that blocks the server's event loop can't also freeze the test's clock.</figcaption>
+</figure>
+
+<p>The fake isn't a trivial stub. It produces words on a real background thread and stops when a flag is set, like the real model does, so the real lock, cancellation and cleanup code gets exercised.</p>
+
+<h3>Each concurrency test guards a bug we hit</h3>
+<div class="table-wrap"><table>
+<tr><th>Test</th><th>Guards against</th></tr>
+<tr><td><code>health stays fast during non-streaming generation</code></td><td>Calling <code>generate()</code> directly in <code>async def</code> (the 4.6 s freeze)</td></tr>
+<tr><td><code>only one generation runs at a time</code></td><td>Losing the lock</td></tr>
+<tr><td><code>client disconnect stops generation</code></td><td>Forgetting to tell the thread to stop</td></tr>
+<tr><td><code>next request never overlaps a cancelled generation</code></td><td>Releasing the lock while the thread is still running (the shield)</td></tr>
+<tr><td><code>client leaving the queue never starts a generation</code></td><td>A request that left still taking its turn</td></tr>
+</table></div>
+
+<h3>Can the tests actually fail?</h3>
+<p>A passing test only means something if it goes red when the code breaks. So I broke the server four ways on purpose:</p>
+<div class="table-wrap"><table>
+<tr><th>Deliberate break</th><th>Caught by</th></tr>
+<tr><td>Blocking <code>generate()</code> returns</td><td>health during non-streaming generation</td></tr>
+<tr><td>Remove the shield</td><td>next request never overlaps</td></tr>
+<tr><td>Remove the lock</td><td>one generation at a time, and 2 others</td></tr>
+<tr><td>Don't cancel on disconnect</td><td>disconnect stops generation</td></tr>
+</table></div>
+
+<h3>Three CI jobs</h3>
+<div class="table-wrap"><table>
+<tr><th>Job</th><th>What it does</th></tr>
+<tr><td><code>lint</code></td><td><code>ruff check</code> and <code>ruff format --check</code></td></tr>
+<tr><td><code>test</code></td><td><code>pytest</code> with only the <code>week02-serve</code> dependency group (no torch), using <code>uv sync --locked</code> so CI tests the exact pinned versions</td></tr>
+<tr><td><code>Docker image</code></td><td>Builds the amd64 image (next sections)</td></tr>
+</table></div>
+<div class="callout gotcha"><b>Not covered in CI</b>
+<p>The real <code>Stream</code> with a real model. I verified it by hand. One test that needs torch (the stop hook) runs locally and shows as "skipped" in CI, not silently missing.</p></div>
+</section>
+
+<!-- ============ 13. DOCKER ============ -->
+<section id="docker">
+<h2><span class="num">13</span>Docker</h2>
+<p class="sub">Step 7: the same server, from a container, with the weights and secrets kept out.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  A["pyproject.toml + uv.lock"] --> B["Stage 1: builder<br/>uv installs torch, transformers... (slow, cached)"]
+  B -- "copy only the finished .venv" --> C["Stage 2: runtime<br/>plain Python, non-root user, healthcheck"]
+  D["app code"] --> C
+  V[("Volume at /models<br/>model weights")] -.-> C
+  K["HF_TOKEN<br/>passed at docker run"] -.-> C
+</pre>
+<figcaption>Java analogy: build with Maven in a JDK image, then copy only the JAR into a JRE image.</figcaption>
+</figure>
+
+<div class="table-wrap"><table>
+<tr><th>What I measured (Mac, Qwen 0.5B)</th><th>Result</th></tr>
+<tr><td>First start (downloads the model into a volume)</td><td><b>111 s</b></td></tr>
+<tr><td>New container, same volume</td><td><b>4 s</b></td></tr>
+<tr><td>Rebuild after changing one line of app code</td><td><b>2.9 s</b> (the first build took 8 min 44 s)</td></tr>
+<tr><td>Image size (arm64)</td><td>9.3 GB</td></tr>
+</table></div>
+
+<h3>The lessons</h3>
+<ul>
+  <li><b>Layer order.</b> Dependency files are copied first, so the slow install is cached until <code>pyproject.toml</code> or <code>uv.lock</code> change. That is the 2.9 s vs 8 min 44 s.</li>
+  <li><b>Weights live in a volume, not the image.</b> Otherwise every fresh container re-downloads the model, which on a 16 GB Llama burns paid GPU time. Code and model are versioned separately.</li>
+  <li><b>Secrets at run time</b> (<code>-e HF_TOKEN</code>), never <code>ENV</code> or <code>ARG</code> in the Dockerfile, which would be stored in the image. I checked that <code>docker inspect</code> and <code>docker history</code> contain none.</li>
+  <li><b><code>--host 0.0.0.0</code></b> is required in a container. The default <code>127.0.0.1</code> accepts nothing from outside.</li>
+  <li><b><code>.dockerignore</code> as an allowlist.</b> Docker uploads the whole build folder first; without it my 791 MB <code>.venv</code> would be sent on every build.</li>
+  <li><b>Non-root user</b>, so a compromised process has fewer rights.</li>
+</ul>
+<div class="callout idea"><b>Why 9.3 GB, on a machine with no NVIDIA GPU?</b>
+<p>PyTorch's Linux wheel bundles the CUDA libraries: about 3.3 GB of <code>nvidia-*</code> packages plus 0.8 GB of Triton. That also means a GPU host only needs the NVIDIA <em>driver</em>, not a CUDA base image. The cost is a big pull when the image reaches a rented GPU, which counts toward cold start.</p></div>
+<div class="callout gotcha"><b>Platform mismatch</b>
+<p>A Mac builds <b>arm64</b>. RunPod GPUs run <b>amd64</b>. That is exactly why CI builds the image: GitHub's runners are amd64.</p></div>
+</section>
+
+<!-- ============ 14. SHIP ============ -->
+<section id="ship">
+<h2><span class="num">14</span>Getting it onto a GPU</h2>
+<p class="sub">Step 8, done: the image ran on a rented RTX 4090.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  PR["Pull request"] --> L["lint"]
+  PR --> T["test"]
+  PR --> D1["Docker: build amd64<br/>(nothing published)"]
+  M["Merge to main"] --> D2["Docker: build and publish to GHCR<br/>:latest and :sha-commit"]
+  D2 --> R["RunPod pulls :sha-... and runs it"]
+</pre>
+<figcaption>Only code that passed review and tests gets published. If every PR published <code>latest</code>, unreviewed code could end up on your GPU.</figcaption>
+</figure>
+
+<ul>
+  <li><b>Least privilege.</b> The image workflow is the only one allowed to write packages. Lint and test can't publish.</li>
+  <li><b>Deploy the <code>sha-</code> tag, not <code>latest</code>.</b> A sha points to exactly one build, so you know what ran and can roll back.</li>
+  <li><b>Registry layer cache.</b> Reinstalling torch takes minutes, so unchanged layers are reused between runs.</li>
+  <li><b>A runbook</b> (<code>week02-thin-slice/RUNBOOK.md</code>) covers picking the machine, pod settings, cold-start timing, running the load test from inside the pod, and shutting it down.</li>
+</ul>
+<div class="callout gotcha"><b>Two things that could bite on a real GPU box</b>
+<p><b>CUDA 13.</b> The lockfile pins PyTorch libraries built for CUDA 13, which needs a recent NVIDIA driver. <b>Set <code>DEVICE=cuda</code>.</b> Without it, the server falls back to the CPU when CUDA isn't usable, and an 8B model on a CPU would just hang. With it, a broken GPU setup crashes at startup, which is what you want. (I checked this: on a machine without CUDA it fails at once with "Torch not compiled with CUDA enabled".)</p></div>
+<h3>The GPU numbers (Llama 3.1 8B, RTX 4090, $0.90/hour)</h3>
+<div class="table-wrap"><table>
+<tr><th>Users</th><th>TTFT p50</th><th>TTFT max</th><th>ITL p50 / mean</th><th>Total output</th></tr>
+<tr><td>1</td><td>686 ms</td><td>1.0 s</td><td>38 / 47 ms</td><td>18.1 chunks/s</td></tr>
+<tr><td>4</td><td>7.6 s</td><td>11.4 s</td><td>35 / 43 ms</td><td>22.6 chunks/s</td></tr>
+<tr><td>16</td><td>31.4 s</td><td>56.5 s</td><td>35 / 45 ms</td><td>21.9 chunks/s</td></tr>
+</table></div>
+<ul>
+  <li><b>Same shape as the Mac.</b> ITL and total output stay flat; TTFT grows with the queue. The 16th user waited 56 s for the first word. A faster GPU doesn't fix a server that does one thing at a time.</li>
+  <li><b>Bigger model, slower chunks.</b> About 45 ms against the Mac's 12 ms, because 16 GB of weights are read for every token.</li>
+  <li><b>Memory matches the math.</b> 15 GiB idle (8.03 B parameters x 2 bytes), 16 GiB after the 16-user run, out of 24.</li>
+  <li><b>Cold start:</b> about 1 to 2 minutes from deploy to ready (model download and load: 55 s). <b>Whole session cost: $0.54</b>, including two failed starts.</li>
+</ul>
+<div class="callout gotcha"><b>Two rented hosts failed before the third worked</b>
+<p>One reported "GPU requires reset". The other had a driver that only supports CUDA 12.8, but the image's PyTorch needs CUDA 13. Because <code>DEVICE=cuda</code> was set, that second failure was a loud crash, not an 8B model silently crawling on a CPU. Filtering for CUDA 13 hosts fixed it.</p></div>
+<div class="callout idea"><b>Caveat</b>
+<p>These numbers were measured from my laptop through RunPod's proxy, so they include network time. Running the load test inside the pod would be cleaner.</p></div>
 </section>
 
 <!-- ============ GLOSSARY ============ -->
@@ -613,6 +833,16 @@ flowchart TD
 <tr><td>Producer / consumer</td><td>One side puts items in a queue, the other takes them out</td></tr>
 <tr><td>Lifespan</td><td>FastAPI's startup/shutdown hook, like a Spring <code>@PostConstruct</code> / <code>@PreDestroy</code></td></tr>
 <tr><td>Device</td><td><code>cuda</code> (NVIDIA), <code>mps</code> (Apple GPU), or <code>cpu</code></td></tr>
+<tr><td>Starlette</td><td>The web framework FastAPI is built on. It routes requests, runs <code>StreamingResponse</code>, and cancels your generator when a client disconnects</td></tr>
+<tr><td>Cancellation</td><td>How async code is told to stop. It cancels the coroutine, but never the thread doing blocking work</td></tr>
+<tr><td>StoppingCriteria</td><td>A hook <code>generate()</code> calls after every token. Returning "stop" ends generation early</td></tr>
+<tr><td>Shield</td><td><code>anyio.CancelScope(shield=True)</code>: protects a short block (here, the cleanup wait) from an in-progress cancellation</td></tr>
+<tr><td>Fake (test double)</td><td>A stand-in for something heavy, so tests run without it. Ours replaces the model</td></tr>
+<tr><td>Multi-stage build</td><td>A Dockerfile with a build stage and a lean runtime stage that receives only the finished output</td></tr>
+<tr><td>Docker layer cache</td><td>Docker reuses a step if nothing above it changed, so order steps from slowest-changing to fastest-changing</td></tr>
+<tr><td>Volume</td><td>Storage that lives outside a container, so data like model weights survives restarts</td></tr>
+<tr><td>GHCR</td><td>GitHub Container Registry: where CI publishes the Docker image for the GPU box to pull</td></tr>
+<tr><td>Least privilege</td><td>Give each job only the permissions it needs. Only the image workflow may write packages</td></tr>
 </table></div>
 </section>
 
@@ -623,11 +853,11 @@ flowchart TD
   <li><b>Talk to the model in a plain script</b><span class="status done">done</span></li>
   <li><b>Put it in FastAPI, deliberately blocking</b><span class="status done">done</span> &middot; measured the 4.6 s freeze</li>
   <li><b>Thread + queue + streaming</b><span class="status done">done</span> &middot; <code>/health</code> back to 0.00 s</li>
-  <li><b>Stop generating when the client disconnects</b><span class="status next">next</span></li>
-  <li><b>Measure it</b><span class="status todo">todo</span> &middot; extend the load test with ITL; run 1, 4 and 16 users to see the queue</li>
-  <li><b>Tests and CI</b><span class="status todo">todo</span> &middot; fake model, no GPU in CI</li>
-  <li><b>Docker</b><span class="status todo">todo</span> &middot; multi-stage build, weights and secrets kept out of the image</li>
-  <li><b>GPU run</b><span class="status todo">todo</span> &middot; Llama 3.1 8B on a rented GPU, then shut it down</li>
+  <li><b>Stop generating when the client disconnects</b><span class="status done">done</span> &middot; stop flag plus a shielded cleanup; generation ends at the disconnect</li>
+  <li><b>Measure it</b><span class="status done">done</span> &middot; TTFT 32 ms &rarr; 6.6 s from 1 to 16 users while ITL stayed 12 ms</li>
+  <li><b>Tests and CI</b><span class="status done">done</span> &middot; 13 tests with a fake model, four deliberate breaks all caught, three CI jobs</li>
+  <li><b>Docker</b><span class="status done">done</span> &middot; multi-stage build; weights in a volume, token at run time; restart in 4 s</li>
+  <li><b>GPU run</b><span class="status done">done</span> &middot; Llama 3.1 8B on an RTX 4090: TTFT 686 ms &rarr; 31 s from 1 to 16 users, ITL flat at about 45 ms, $0.54 for the session</li>
 </ol>
 
 <h3>Run it yourself</h3>
@@ -642,12 +872,23 @@ curl -N localhost:8000/v1/chat/completions -H 'content-type: application/json' \
 # the freeze test: /health should stay fast while a long answer generates
 curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
   -d '{"messages":[{"role":"user","content":"Write a long story about a robot."}],"max_tokens":500}' > /dev/null &
-sleep 0.5; time curl -s localhost:8000/health</code></pre>
+sleep 0.5; time curl -s localhost:8000/health
+
+# the queue: 16 users at once, reporting TTFT and ITL
+uv run python scripts/loadtest.py /v1/chat/completions --prompt "Write a long story about a robot." \
+  --max-tokens 100 -n 16 -c 16 --base-url http://127.0.0.1:8000
+
+# the tests (no GPU, no torch)
+cd .. &amp;&amp; uv sync --group dev --group week02-serve &amp;&amp; uv run pytest
+
+# Docker (build from the repo root)
+docker build -f week02-thin-slice/Dockerfile -t week02-thin-slice:dev .
+docker run --rm -p 8000:8000 -v hf-cache:/models week02-thin-slice:dev</code></pre>
 </section>
 
 <footer>
   Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
-  Numbers are from a single run on an Apple-silicon Mac with Qwen2.5-0.5B-Instruct, so treat them as illustrations, not benchmarks.
+  Numbers are from single runs on an Apple-silicon Mac with Qwen2.5-0.5B-Instruct, so treat them as illustrations, not benchmarks. The real-GPU numbers (Llama 3.1 8B) are still to come.
 </footer>
 </main>
 </div>

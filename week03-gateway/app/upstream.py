@@ -20,6 +20,7 @@ import httpx
 
 class Upstream(Protocol):
     status: int
+    content_type: str  # e.g. "text/event-stream" (streaming) or "application/json"
 
     def chunks(self) -> AsyncIterator[bytes]: ...
     async def read(self) -> bytes: ...
@@ -38,6 +39,7 @@ class AiohttpResponse:
     def __init__(self, resp: aiohttp.ClientResponse):
         self._resp = resp
         self.status = resp.status
+        self.content_type = resp.headers.get("Content-Type", "application/octet-stream")
         self._complete = False
 
     async def chunks(self) -> AsyncIterator[bytes]:
@@ -84,6 +86,7 @@ class HttpxResponse:
     def __init__(self, resp: httpx.Response):
         self._resp = resp
         self.status = resp.status_code
+        self.content_type = resp.headers.get("Content-Type", "application/octet-stream")
 
     async def chunks(self) -> AsyncIterator[bytes]:
         async for data in self._resp.aiter_raw():

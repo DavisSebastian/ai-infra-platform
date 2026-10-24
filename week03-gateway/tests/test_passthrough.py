@@ -54,6 +54,7 @@ async def test_non_streaming_request_is_forwarded(gateway_url):
     async with httpx.AsyncClient(timeout=10) as c:
         r = await c.post(f"{gateway_url}/v1/chat/completions", json={**BODY, "stream": False, "max_tokens": 3})
     assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")  # the upstream's type, not text/event-stream
     assert r.json()["usage"]["completion_tokens"] == 3
 
 

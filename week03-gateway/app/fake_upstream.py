@@ -23,7 +23,7 @@ FIRST_CHUNK_DELAY = float(os.getenv("FAKE_FIRST_DELAY", "0.0"))  # simulated pro
 
 app = FastAPI(title="Fake model server")
 
-stats = {"started": 0, "finished": 0, "cancelled": 0}
+stats = {"started": 0, "finished": 0, "cancelled": 0, "active": 0, "max_active": 0}
 
 
 class ChatRequest(BaseModel):
@@ -51,6 +51,8 @@ def chunk(delta: dict, finish: str | None = None) -> str:
 
 async def generate(n_chunks: int):
     stats["started"] += 1
+    stats["active"] += 1
+    stats["max_active"] = max(stats["max_active"], stats["active"])
     try:
         await asyncio.sleep(FIRST_CHUNK_DELAY)
         yield chunk({"role": "assistant", "content": ""})
@@ -64,6 +66,8 @@ async def generate(n_chunks: int):
         # uvicorn cancels this task when the client disconnects.
         stats["cancelled"] += 1
         raise
+    finally:
+        stats["active"] -= 1
 
 
 @app.get("/health")

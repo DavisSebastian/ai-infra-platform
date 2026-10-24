@@ -72,8 +72,8 @@ def start_gateway(fake_url, monkeypatch):
     """Factory: start the real gateway against the fake model server and a chosen Redis URL."""
     started = []
 
-    def _start(client: str = "aiohttp", redis_url: str | None = None) -> str:
-        monkeypatch.setattr(gateway, "UPSTREAM_URL", fake_url)
+    def _start(client: str = "aiohttp", redis_url: str | None = None, upstream_url: str | None = None) -> str:
+        monkeypatch.setattr(gateway, "UPSTREAM_URL", upstream_url or fake_url)
         monkeypatch.setattr(gateway, "PROXY_CLIENT", client)
         monkeypatch.setattr(gateway, "REDIS_URL", redis_url or closed_port_url())
         srv, thread, url = serve(gateway.app)

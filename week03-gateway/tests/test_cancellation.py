@@ -52,4 +52,4 @@ async def test_a_completed_stream_is_not_counted_as_cancelled(gateway_url, fake_
                 pass
 
     s = await wait_for(fake_url, "finished", 1)
-    assert s == {"started": 1, "finished": 1, "cancelled": 0}
+    assert (s["started"], s["finished"], s["cancelled"]) == (1, 1, 0)

@@ -1,0 +1,18 @@
+# Step 3: just Redis. The gateway and the fake upstream join this file in step 8, once they have a Dockerfile.
+#
+#   docker compose up -d      start in the background
+#   docker compose ps         STATUS should read "healthy"
+#   docker compose down       stop and remove
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379" # Mac port : container port. Lets code on the Mac reach Redis at localhost:6379
+    healthcheck:
+      # Docker runs this inside the container. Exit code 0 means healthy.
+      # `depends_on: condition: service_healthy` (added in step 8) waits for this, not just for "started".
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5

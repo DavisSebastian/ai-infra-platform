@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - week02-thin-slice/**
+      - week04-cpp-cleaner/pyproject.toml # uv.lock references it, so this build reads it
       - pyproject.toml
       - uv.lock
       - .dockerignore
@@ -17,6 +18,7 @@ on:
     # Same list as above. Skips this slow job when only docs or notes change.
     paths:
       - week02-thin-slice/**
+      - week04-cpp-cleaner/pyproject.toml # uv.lock references it, so this build reads it
       - pyproject.toml
       - uv.lock
       - .dockerignore

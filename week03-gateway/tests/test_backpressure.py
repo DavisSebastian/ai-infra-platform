@@ -26,13 +26,28 @@ def settings(monkeypatch):
     return _set
 
 
-async def stream_one(url: str, t0: float) -> tuple[int, float, dict | None]:
-    """One streaming request, read to the end. Returns (status, seconds until it finished, error body or None)."""
-    async with httpx.AsyncClient(timeout=30) as c:
-        async with c.stream("POST", f"{url}/v1/chat/completions", json=BODY) as r:
-            await r.aread()
-            err = None if r.status_code == 200 else {"body": r.json(), "retry_after": r.headers.get("retry-after")}
-            return r.status_code, time.perf_counter() - t0, err
+async def stream_one(url: str, t0: float, client: httpx.AsyncClient | None = None) -> tuple[int, float, dict | None]:
+    """One streaming request, read to the end. Returns (status, seconds since t0 when it finished, error or None).
+
+    Pass a shared `client` when timing matters. Creating an httpx client loads TLS certificates, which blocks the
+    event loop for several ms each; six of them in a row once cost ~75 ms of a 100 ms "rejection" and made the
+    timing assertion flaky on a slower CI runner. A client of its own is used only where a test needs its
+    connection to close independently (the client that leaves the queue).
+    """
+    if client is None:
+        async with httpx.AsyncClient(timeout=30) as own:
+            return await stream_one(url, t0, own)
+    async with client.stream("POST", f"{url}/v1/chat/completions", json=BODY) as r:
+        await r.aread()
+        err = None if r.status_code == 200 else {"body": r.json(), "retry_after": r.headers.get("retry-after")}
+        return r.status_code, time.perf_counter() - t0, err
+
+
+@pytest.fixture
+async def http():
+    """One client shared by all the simulated users in a test, created before any clock starts."""
+    async with httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_connections=20)) as c:
+        yield c
 
 
 async def get(url: str, path: str) -> dict:
@@ -40,17 +55,19 @@ async def get(url: str, path: str) -> dict:
         return (await c.get(url + path)).json()
 
 
-async def test_one_in_flight_two_queued_rest_rejected_fast(settings, start_gateway, fake_url):
+async def test_one_in_flight_two_queued_rest_rejected_fast(settings, start_gateway, fake_url, http):
     """The Idea 6 prediction: cap 1, queue 2, 6 users at once -> 3 served, 3 rejected in milliseconds."""
     settings(max_in_flight=1, max_queue=2)
     url = start_gateway()
     t0 = time.perf_counter()
-    results = await asyncio.gather(*[stream_one(url, t0) for _ in range(6)])
+    results = await asyncio.gather(*[stream_one(url, t0, http) for _ in range(6)])
 
     served = sorted(t for status, t, _ in results if status == 200)
     rejected = [(t, err) for status, t, err in results if status == 503]
     assert len(served) == 3 and len(rejected) == 3, results
-    assert max(t for t, _ in rejected) < 0.15, "rejections must be immediate, not after waiting"
+    # "Immediate" means "did not wait for a slot". A slot frees only after a whole answer (~0.42 s), so anything
+    # under half an answer cannot have waited. (Was a fixed 0.15 s, which flaked at 0.162 s on a CI runner.)
+    assert max(t for t, _ in rejected) < ANSWER / 2, "rejections must be immediate, not after waiting for a slot"
     for _, err in rejected:
         assert err["body"]["error"]["type"] == "overloaded"
         assert int(err["retry_after"]) >= 1
@@ -64,11 +81,11 @@ async def test_one_in_flight_two_queued_rest_rejected_fast(settings, start_gatew
     assert (health["in_flight"], health["queued"]) == (0, 0)
 
 
-async def test_queue_timeout_rejects_requests_that_waited_too_long(settings, start_gateway):
+async def test_queue_timeout_rejects_requests_that_waited_too_long(settings, start_gateway, http):
     settings(max_in_flight=1, max_queue=2, queue_timeout=0.2)
     url = start_gateway()
     t0 = time.perf_counter()
-    results = await asyncio.gather(*[stream_one(url, t0) for _ in range(3)])
+    results = await asyncio.gather(*[stream_one(url, t0, http) for _ in range(3)])
 
     assert sorted(status for status, _, _ in results) == [200, 503, 503]
     for status, t, err in results:

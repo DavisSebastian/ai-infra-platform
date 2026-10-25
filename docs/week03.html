@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 3: The Gateway</title>
+<meta name="description" content="A gateway in front of a one-at-a-time LLM server: streaming proxy, token bucket rate limiting in Redis, and backpressure that turns a 17 s wait into a fast no.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
+    --accent: #2f5bea; --accent-soft: #e8eefe;
+    --good: #16794c; --good-soft: #e5f5ec;
+    --warn: #8a5300; --warn-soft: #fff2dc;
+    --bad: #b4261e; --bad-soft: #fde9e7;
+    --java: #7a3fb0; --java-soft: #f1e8fa;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1a1f2a; --text: #e7eaf2; --muted: #98a1b5; --line: #2b3242;
+      --accent: #8aa6ff; --accent-soft: #1f2a4a;
+      --good: #4cc38a; --good-soft: #12301f;
+      --warn: #f0b34a; --warn-soft: #3a2b0e;
+      --bad: #ff7b72; --bad-soft: #3a1613;
+      --java: #c79bf2; --java-soft: #2d1f40;
+      --code-bg: #202636;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; font-size: 0.88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; gap: 40px; padding: 0 20px; }
+  nav.toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 32px 0; font-size: 14.5px; }
+  nav.toc .toc-title { font-weight: 700; margin-bottom: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 12px; }
+  nav.toc a { display: block; padding: 5px 10px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--text); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  main { padding: 40px 0 80px; min-width: 0; }
+
+  .hero { padding: 8px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: 2.5rem; line-height: 1.15; margin: 8px 0 14px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 40em; }
+  h2 { font-size: 1.7rem; margin: 56px 0 6px; letter-spacing: -0.01em; line-height: 1.25; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p { margin: 10px 0; }
+  .sub { color: var(--muted); margin-top: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  .callout { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .callout > b:first-child { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+  .callout p { margin: 4px 0; }
+  .callout.java { background: var(--java-soft); color: var(--text); border-color: color-mix(in srgb, var(--java) 30%, transparent); }
+  .callout.java > b:first-child { color: var(--java); }
+  .callout.measured { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.measured > b:first-child { color: var(--good); }
+  .callout.gotcha { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .callout.gotcha > b:first-child { color: var(--warn); }
+  .callout.bug { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .callout.bug > b:first-child { color: var(--bad); }
+  .callout.idea { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .callout.idea > b:first-child { color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15.5px; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  figure.diagram { margin: 20px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 12px 10px; }
+  figure.diagram figcaption { text-align: center; color: var(--muted); font-size: 14px; padding: 8px 12px 4px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .tl { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 20px 0; }
+  .tl-title { font-weight: 700; margin-bottom: 10px; }
+  .tl-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; margin: 7px 0; }
+  .tl-label { font-size: 13.5px; color: var(--muted); text-align: right; }
+  .tl-track { position: relative; height: 30px; background: var(--code-bg); border-radius: 7px; }
+  .bar { position: absolute; top: 3px; height: 24px; border-radius: 6px; font-size: 12px; line-height: 24px; padding: 0 8px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .bar.blue { background: #2f5bea; } .bar.green { background: #16794c; } .bar.red { background: #c0392b; }
+  .bar.grey { background: #7b8499; } .bar.amber { background: #b9770e; } .bar.purple { background: #7a3fb0; }
+  .tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 6px 0 0 142px; }
+  .tl-note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .bar.out { overflow: visible; padding: 0; }
+  .bar.out span { position: absolute; left: 100%; margin-left: 8px; color: var(--text); }
+  .marker { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--bad); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; margin-bottom: 2px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+  .steps { list-style: none; counter-reset: s; padding: 0; margin: 16px 0; }
+  .steps li { counter-increment: s; position: relative; padding: 4px 0 12px 46px; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 2px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  .status { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  .status.done { background: var(--good-soft); color: var(--good); }
+  .status.todo { background: var(--code-bg); color: var(--muted); }
+  .status.next { background: var(--warn-soft); color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding-top: 18px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; gap: 0; }
+    nav.toc { display: none; }
+    h1 { font-size: 2rem; }
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-label { text-align: left; }
+    .tl-axis { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Week 3</div>
+  <a href="#big-picture">The big picture</a>
+  <a href="#proxy">1. A streaming proxy</a>
+  <a href="#two-nos">2. Two kinds of "no"</a>
+  <a href="#bucket">3. The token bucket</a>
+  <a href="#race">4. The race, and Lua</a>
+  <a href="#pool">5. Pools and timeouts</a>
+  <a href="#backpressure">6. Backpressure</a>
+  <a href="#failure">7. When Redis fails</a>
+  <a href="#leak">8. The slot that never comes back</a>
+  <a href="#results">9. Results</a>
+  <a href="#tests">10. Tests, CI, Docker</a>
+  <a href="#progress">Progress and next</a>
+  <a href="index.html">&larr; Week 2</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI Infra Platform &middot; Week 3</div>
+  <h1>The Gateway: a fast no beats a slow yes</h1>
+  <p class="lead">Week 2's model server does one generation at a time, and it can't say "I'm full". With 16 users at once, the last one waited 56 seconds on an RTX 4090.
+  This week a gateway sits in front of it: it limits each client, bounds the line, and turns everyone else away in milliseconds.</p>
+  <div class="stats">
+    <div class="stat"><b>12.1 s &rarr; 1.7 s</b><span>worst wait for the first word, 16 users, bare server vs gateway</span></div>
+    <div class="stat"><b>4 ms</b><span>time to reject the 13 users who couldn't be served in time</span></div>
+    <div class="stat"><b>50 &rarr; 10</b><span>requests let through a limit of 10: naive Redis limiter vs Lua</span></div>
+    <div class="stat"><b>9.34 GB &rarr; 293 MB</b><span>model-server image vs gateway image</span></div>
+  </div>
+</header>
+
+<section id="big-picture">
+<h2>The big picture</h2>
+<p class="sub">Three checks between the client and the model.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  C["Client"] -->|"POST, SSE back"| RL
+  subgraph GW["Gateway"]
+    RL{"1. Rate limit<br/>per client"} -->|ok| AD{"2. Admission<br/>1 running, 2 waiting"}
+    AD -->|"your turn"| PX["3. Proxy<br/>relay bytes live"]
+  end
+  RL -.->|"429 + Retry-After"| C
+  AD -.->|"503 + Retry-After"| C
+  RL <--> R[("Redis<br/>token buckets")]
+  PX --> M["Model server<br/>one generation at a time"]
+</pre>
+<figcaption>Cheap checks first. Only requests that pass both ever reach the GPU.</figcaption>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>File</th><th>Role</th><th>Spring analogy</th></tr>
+<tr><td><code>app/main.py</code></td><td>The HTTP API and the order of the checks</td><td><code>@RestController</code> + filters</td></tr>
+<tr><td><code>app/redis_limiter.py</code></td><td>Token bucket as one atomic Lua script</td><td>Bucket4j with a Redis backend</td></tr>
+<tr><td><code>app/admission.py</code></td><td>In-flight cap, bounded queue, queue timeout</td><td><code>ThreadPoolExecutor</code> + <code>ArrayBlockingQueue</code> + <code>AbortPolicy</code></td></tr>
+<tr><td><code>app/upstream.py</code></td><td>One pooled HTTP client to the model server</td><td><code>WebClient</code> with a connection pool</td></tr>
+<tr><td><code>app/fake_upstream.py</code></td><td>A stand-in model server with exact timing, for tests</td><td>WireMock</td></tr>
+</table></div>
+</section>
+
+<section id="proxy">
+<h2><span class="num">1</span>A streaming proxy</h2>
+<p class="sub">Step 1: pass each chunk through the moment it arrives.</p>
+<p>The gateway makes its own request to the model server and relays the answer. The one rule: <b>never collect the whole answer first</b>. If it did, the first word would arrive only when the last one does, and streaming would be pointless.</p>
+<p>It forwards raw bytes without parsing the SSE events: no added latency, nothing to get wrong. One pooled client is created at startup and reused, like the model in Week 2.</p>
+<div class="callout measured"><b>Measured</b><p>200 users against a fake model server: median first word 35 ms direct, 33 ms through the gateway with aiohttp. With httpx: 2.9 s, so aiohttp it is.</p></div>
+<div class="callout gotcha"><b>Gotcha</b><p>A first run showed aiohttp at 458 ms. The upstream pool had 100 connections and 200 users were queueing for them. Pool exhaustion looks exactly like a slow client.</p></div>
+<p>When a client leaves, the gateway closes its upstream request, and the model server's stop flag from Week 2 fires. A test proves it: the fake model server counts the stream as cancelled, not finished.</p>
+</section>
+
+<section id="two-nos">
+<h2><span class="num">2</span>Two kinds of "no"</h2>
+<p class="sub">Rate limiting and backpressure answer different questions.</p>
+<div class="table-wrap"><table>
+<tr><th></th><th>Rate limiting</th><th>Backpressure</th></tr>
+<tr><td>Question</td><td>Is <b>this client</b> asking too much?</td><td>Is <b>the system</b> too full right now?</td></tr>
+<tr><td>Protects</td><td>Fairness</td><td>Capacity and latency</td></tr>
+<tr><td>Status</td><td><code>429</code></td><td><code>503</code></td></tr>
+<tr><td>Can fire on an idle server?</td><td>Yes</td><td>No</td></tr>
+</table></div>
+<p>You need both. Sixteen polite clients, each within their own limit, still build Week 2's 56-second line. One greedy client, without a rate limit, can take every place in that line.</p>
+</section>
+
+<section id="bucket">
+<h2><span class="num">3</span>The token bucket</h2>
+<p class="sub">Step 4: bursts allowed, average capped.</p>
+<p>Each client has a bucket of up to <b>capacity</b> permits that refills at <b>refill rate</b> per second. A request takes one permit; an empty bucket means 429. Capacity 10 and 1 per second means "10 at once, then one a second".</p>
+<p>No timer runs in the background. Each check computes the refill from the time since the last check:</p>
+<pre><code>elapsed = max(0, now - updated_at)
+permits = min(capacity, permits + elapsed * refill_rate)
+allowed = permits &gt;= 1  (take one if so)
+store permits AND updated_at = now, together</code></pre>
+<div class="callout bug"><b>Found by breaking the code</b><p>The first test set missed two bugs: storing the refilled permits with the <i>old</i> timestamp counts the same seconds twice (the limit leaks), and a clock that jumps back produced a negative refill. Both have tests now. Rule: permits and timestamp are one piece of state.</p></div>
+</section>
+
+<section id="race">
+<h2><span class="num">4</span>The race, and Lua</h2>
+<p class="sub">Correct arithmetic, wrong result.</p>
+<p>Two gateway replicas must share one bucket per client, so it lives in Redis. The obvious version reads the bucket, computes in Python, and writes it back: two Redis commands with an <code>await</code> between them.</p>
+<div class="table-wrap"><table>
+<tr><th>Limit 10, 50 requests at once, 5 runs</th><th>Allowed</th></tr>
+<tr><td>Naive: read, compute, write</td><td><b>50 of 50</b>, every run</td></tr>
+<tr><td>Lua script: one atomic command</td><td><b>exactly 10</b>, every run</td></tr>
+</table></div>
+<p>All 50 read "10 permits left" before any of them wrote. Redis runs a Lua script as one uninterruptible command, so the read-compute-write can't be split. The naive version even reuses the correct pure function: the only bug is the gap.</p>
+<div class="callout java"><b>Java analogy</b><p><code>if (map.get(k) &gt; 0) map.put(k, ...)</code> vs <code>AtomicInteger.decrementAndGet()</code>. A check followed by an act is a race; make it one operation.</p></div>
+</section>
+
+<section id="pool">
+<h2><span class="num">5</span>Pools and timeouts</h2>
+<p class="sub">Step 3: one Redis pool, and a deadline on every wait.</p>
+<p>One <code>BlockingConnectionPool</code> is created at startup. When all connections are busy, the next caller waits up to 0.5 s for one instead of failing at once, the same as HikariCP's <code>connectionTimeout</code>.</p>
+<div class="callout measured"><b>Measured</b><p>A fake Redis that accepts connections and never answers. With a socket timeout, <code>/health</code> gives up after 0.5 s. With the timeout removed, it hung until the test client quit at 10 s. One slow dependency freezes every request that touches it.</p></div>
+</section>
+
+<section id="backpressure">
+<h2><span class="num">6</span>Backpressure</h2>
+<p class="sub">Step 5: one doctor, two chairs in the waiting room.</p>
+<ol class="steps">
+  <li><b>Cap in-flight requests</b> at what the model can do: 1 for the Week 2 server.</li>
+  <li><b>Bound the queue.</b> Little's Law sizes it: acceptable wait &divide; time per answer. About 10 s &divide; 3.7 s on the GPU gives 2.</li>
+  <li><b>Shed early.</b> Queue full on arrival: 503 at once.</li>
+  <li><b>Time out the wait.</b> Still queued after 10 s: 503.</li>
+  <li><b>Drop leavers.</b> A queued client who disconnects is removed before it reaches the model, so the GPU never works for nobody.</li>
+</ol>
+<p>The queue lives in gateway memory, not Redis: it protects this model server's capacity, and it must keep working when Redis is down.</p>
+</section>
+
+<section id="failure">
+<h2><span class="num">7</span>When Redis fails</h2>
+<p class="sub">Fail open or fail closed is a product decision.</p>
+<div class="table-wrap"><table>
+<tr><th>Choice</th><th>Redis down means</th><th>Good for</th></tr>
+<tr><td>Fail open</td><td>Requests pass unchecked</td><td>Availability</td></tr>
+<tr><td>Fail closed</td><td>Everything is rejected</td><td>Strict limits, e.g. login attempts</td></tr>
+</table></div>
+<p>The gateway fails open. That's safe here because backpressure doesn't need Redis: a Redis outage costs fairness between clients, not protection of the GPU. Every fail-open is counted in <code>/health</code>, because a silent fail-open is a limiter that's been broken for days.</p>
+<div class="callout measured"><b>Unplanned demo</b><p>Docker quit mid-measurement. The rate-limit test showed no 429s at all, and <code>/health</code> showed why: Redis down, 21 requests let through and counted.</p></div>
+</section>
+
+<section id="leak">
+<h2><span class="num">8</span>The slot that never comes back</h2>
+<p class="sub">Cleanup has more exits than you think.</p>
+<p>Every request that gets a slot must give it back exactly once. Never: with a cap of 1, the gateway is stuck for good. Twice: two generations run at once.</p>
+<p>The natural place for the release is a <code>finally</code> in the streaming generator. But Starlette may never start iterating the generator if the client leaves early, and then its <code>finally</code> never runs. So the release wraps the whole response instead, shielded from cancellation like Week 2's cleanup.</p>
+<div class="callout bug"><b>Found by breaking the code</b><p>Replacing the disconnect watcher showed that a watcher which <i>crashes</i> was treated as "client left", silently dropping a live request. It now raises a visible error.</p></div>
+</section>
+
+<section id="results">
+<h2><span class="num">9</span>Results</h2>
+<p class="sub">Step 7: the real Week 2 server, bare vs behind the gateway.</p>
+<div class="tl"><div class="tl-title">Worst wait for the first word (Qwen 0.5B on the Mac, all users at once)</div>
+<div class="tl-row"><div class="tl-label">16 users, bare</div><div class="tl-track"><div class="bar red" style="left:0;width:15.1%">12.1 s</div></div></div>
+<div class="tl-row"><div class="tl-label">16 users, gateway</div><div class="tl-track"><div class="bar green out" style="left:0;width:2.1%"><span>1.7 s</span></div></div></div>
+<div class="tl-row"><div class="tl-label">64 users, bare</div><div class="tl-track"><div class="bar red" style="left:0;width:80.6%">64.5 s</div></div></div>
+<div class="tl-row"><div class="tl-label">64 users, gateway</div><div class="tl-track"><div class="bar green out" style="left:0;width:2.2%"><span>1.8 s</span></div></div></div>
+<div class="tl-axis"><span>0 s</span><span>20 s</span><span>40 s</span><span>60 s</span><span>80 s</span></div>
+<p class="tl-note">The gateway served 3 users and told the rest "busy, retry in 5 s" within 4 ms (16 users) and 14 ms (64 users). The bare server served everyone, eventually.</p></div>
+<div class="table-wrap"><table>
+<tr><th>Users</th><th>Bare: worst wait</th><th>Gateway: served / rejected</th><th>Gateway: worst wait</th><th>Time to reject</th></tr>
+<tr><td>1</td><td>0.05 s</td><td>1 / 0</td><td>0.04 s</td><td>n/a</td></tr>
+<tr><td>4</td><td>3.2 s</td><td>3 / 1</td><td>1.7 s</td><td>1 ms</td></tr>
+<tr><td>16</td><td>12.1 s</td><td>3 / 13</td><td>1.7 s</td><td>4 ms</td></tr>
+<tr><td>64</td><td>64.5 s</td><td>3 / 61</td><td>1.8 s</td><td>14 ms</td></tr>
+</table></div>
+<p>Repeated three times at 16 users: bare worst 12.1 / 17.0 / 14.2 s, gateway worst 1.7 / 3.3 / 3.0 s, 13 rejected each time in 3&ndash;4 ms.</p>
+<div class="callout idea"><b>What it does not do</b><p>Total output stayed about 55 chunks/s in every run. Backpressure adds no capacity: it stops accepting work that can't be done in time. The bare server eventually served all 16; the gateway served 3 and told 13 to come back. More capacity is continuous batching, in Month 3.</p></div>
+</section>
+
+<section id="tests">
+<h2><span class="num">10</span>Tests, CI, Docker</h2>
+<p class="sub">Steps 8 and 9.</p>
+<div class="cards">
+  <div class="card"><b>50 tests</b><p>Against a real Redis and a fake model server with exact timing. Each guarded behaviour was broken on purpose to check its test fails.</p></div>
+  <div class="card"><b>Redis in CI</b><p>A GitHub Actions service container. <code>REQUIRE_REDIS=1</code> turns "Redis missing" into a failure, not a silent skip.</p></div>
+  <div class="card"><b>Compose smoke test</b><p><code>docker compose up --wait</code> on GitHub, then health, a streamed answer and a 429 through the real containers.</p></div>
+  <div class="card"><b>Two images, two triggers</b><p>A <code>paths</code> filter per image, so a gateway change doesn't rebuild the 9 GB model image.</p></div>
+</div>
+<p>Inside compose the gateway finds Redis at <code>redis:6379</code> and the model at <code>fake:9000</code>: service names, not <code>localhost</code>. Only the gateway publishes a port.</p>
+</section>
+
+<section id="progress">
+<h2>Progress and next steps</h2>
+<ol class="steps">
+  <li><b>Streaming proxy</b><span class="status done">done</span> &middot; adds about 0 ms with aiohttp</li>
+  <li><b>Cancellation end to end</b><span class="status done">done</span> &middot; client leaves, generation stops</li>
+  <li><b>Redis pool and health</b><span class="status done">done</span> &middot; a hung Redis times out in 0.5 s</li>
+  <li><b>Token bucket</b><span class="status done">done</span> &middot; naive 50 of 50 vs Lua exactly 10</li>
+  <li><b>Backpressure</b><span class="status done">done</span> &middot; 1 in flight, queue of 2, fast 503s</li>
+  <li><b>Load test that knows "no"</b><span class="status done">done</span> &middot; accepted vs rejected, time to reject</li>
+  <li><b>Measure</b><span class="status done">done</span> &middot; worst wait 12.1 s &rarr; 1.7 s at 16 users</li>
+  <li><b>Docker and CI</b><span class="status done">done</span> &middot; 293 MB image, compose smoke test</li>
+  <li><b>On the GPU</b><span class="status todo">optional</span> &middot; prediction: the 56 s wait bounded at about 8&ndash;11 s</li>
+</ol>
+<h3>Run it yourself</h3>
+<pre><code>cd week03-gateway
+docker compose up -d --build --wait
+curl -N localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}'
+curl localhost:8080/health
+docker compose down</code></pre>
+</section>
+
+<footer>
+  Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
+  Results are from an Apple-silicon Mac with Qwen2.5-0.5B-Instruct and a fake model server; small samples, so treat them as illustrations, not benchmarks. <a href="index.html">Week 2: The Thin Slice</a>
+</footer>
+</main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: mq.matches ? "dark" : "default",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  });
+  mq.addEventListener("change", () => location.reload());
+
+  const links = [...document.querySelectorAll("nav.toc a")];
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        map.get(e.target.id)?.classList.add("active");
+      }
+    }
+  }, { rootMargin: "-10% 0px -80% 0px" });
+  document.querySelectorAll("main section[id]").forEach(s => io.observe(s));
+</script>
+</body>
+</html>
+

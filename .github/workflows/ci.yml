@@ -51,3 +51,43 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+  test-week03:
+    runs-on: ubuntu-latest
+
+    # A service container: GitHub starts Redis next to the job, like the compose file does locally.
+    # The rate limiter must be tested against a real Redis; a mock would not catch races or Lua mistakes.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379 # the job runs on the VM, so it reaches Redis at localhost:6379
+        # Same healthcheck as docker-compose.yml, different syntax. GitHub waits for "healthy" before the steps run.
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 5
+
+    env:
+      REQUIRE_REDIS: "1" # tests that need Redis must fail, not skip, if it is missing
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve
+
+      # Weeks 2 and 3 each have a package named `app`, so they can't share one pytest run:
+      # point pytest at Week 3's folder and import path explicitly.
+      - name: Run Week 3 tests
+        run: uv run pytest -v -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests

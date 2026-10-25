@@ -1,10 +1,11 @@
-# Deny by default: only what the Week 2 image needs gets sent to the Docker engine.
+# Deny by default: only what the images need gets sent to the Docker engine.
 # (Without this the build context would include .venv, 791 MB, plus git history, PDFs and notes.)
 *
 
 !pyproject.toml
 !uv.lock
 !week02-thin-slice/app
+!week03-gateway/app
 
 **/__pycache__
 **/*.pyc

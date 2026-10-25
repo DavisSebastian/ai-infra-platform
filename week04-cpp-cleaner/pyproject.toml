@@ -1,0 +1,17 @@
+# A separate, installable package with a compiled part. Not the repo's root project: it has its own
+# build backend, because pure-Python packaging can't compile C++.
+[build-system]
+# Pinned exactly. uv.lock pins the RUNTIME dependencies but not these BUILD tools, so with ">=" every fresh build
+# (CI, Docker) would silently pick up whatever was newest that day. Bump these deliberately, and let CI confirm.
+requires = ["scikit-build-core==1.1.1", "pybind11==3.1.0"]
+build-backend = "scikit_build_core.build"   # the bridge: lets uv/pip build a CMake project as a Python package
+
+[project]
+name = "promptclean"
+version = "0.1.0"
+description = "Prompt cleaning for the gateway: a pure-Python reference and a C++ (pybind11) version"
+requires-python = ">=3.12"
+
+[tool.scikit-build]
+wheel.packages = ["src/promptclean"]   # the Python side of the package
+cmake.build-type = "Release"           # optimised machine code; a Debug build can be 10x slower and would ruin the benchmark

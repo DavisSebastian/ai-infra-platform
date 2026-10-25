@@ -11,6 +11,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",  # lets tests be `async def`, needed to test an async server
     "httpx>=0.27",  # test client: real HTTP against an in-process server (fine for tests, too slow for load tests)
+    "hypothesis>=6",  # property-based tests: generates thousands of inputs and shrinks failures (week 4)
 ]
 week01 = [
     "fastapi>=0.115",
@@ -41,10 +42,20 @@ week03-serve = [
     "aiohttp>=3.10",
     "httpx>=0.27",
     "redis>=5",  # redis.asyncio: the async client, with a connection pool built in
+    "promptclean",  # week 4: the C++ prompt cleaner (compiled on install; see week04-cpp-cleaner/)
 ]
 week03 = [
     {include-group = "week03-serve"},
 ]
+
+week04 = [
+    # A separate package with a compiled C++ part. Installing it runs CMake + the C++ compiler (see
+    # week04-cpp-cleaner/pyproject.toml). After changing the C++ code: uv sync --group week04 --reinstall-package promptclean
+    "promptclean",
+]
+
+[tool.uv.sources]
+promptclean = { path = "week04-cpp-cleaner" }
 
 [tool.ruff]
 line-length = 120

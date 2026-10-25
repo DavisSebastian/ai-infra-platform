@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 4: C++ in the Gateway</title>
+<meta name="description" content="A C++ prompt cleaner bound to Python with pybind11: why a worker thread still froze the event loop, the bug only random testing caught, and native code in Docker and CI.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
+    --accent: #2f5bea; --accent-soft: #e8eefe;
+    --good: #16794c; --good-soft: #e5f5ec;
+    --warn: #8a5300; --warn-soft: #fff2dc;
+    --bad: #b4261e; --bad-soft: #fde9e7;
+    --java: #7a3fb0; --java-soft: #f1e8fa;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1a1f2a; --text: #e7eaf2; --muted: #98a1b5; --line: #2b3242;
+      --accent: #8aa6ff; --accent-soft: #1f2a4a;
+      --good: #4cc38a; --good-soft: #12301f;
+      --warn: #f0b34a; --warn-soft: #3a2b0e;
+      --bad: #ff7b72; --bad-soft: #3a1613;
+      --java: #c79bf2; --java-soft: #2d1f40;
+      --code-bg: #202636;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; font-size: 0.88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; gap: 40px; padding: 0 20px; }
+  nav.toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 32px 0; font-size: 14.5px; }
+  nav.toc .toc-title { font-weight: 700; margin-bottom: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 12px; }
+  nav.toc a { display: block; padding: 5px 10px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--text); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  main { padding: 40px 0 80px; min-width: 0; }
+
+  .hero { padding: 8px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: 2.5rem; line-height: 1.15; margin: 8px 0 14px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 40em; }
+  h2 { font-size: 1.7rem; margin: 56px 0 6px; letter-spacing: -0.01em; line-height: 1.25; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p { margin: 10px 0; }
+  .sub { color: var(--muted); margin-top: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  .callout { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .callout > b:first-child { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+  .callout p { margin: 4px 0; }
+  .callout.java { background: var(--java-soft); color: var(--text); border-color: color-mix(in srgb, var(--java) 30%, transparent); }
+  .callout.java > b:first-child { color: var(--java); }
+  .callout.measured { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.measured > b:first-child { color: var(--good); }
+  .callout.gotcha { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .callout.gotcha > b:first-child { color: var(--warn); }
+  .callout.bug { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .callout.bug > b:first-child { color: var(--bad); }
+  .callout.idea { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .callout.idea > b:first-child { color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15.5px; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  figure.diagram { margin: 20px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 12px 10px; }
+  figure.diagram figcaption { text-align: center; color: var(--muted); font-size: 14px; padding: 8px 12px 4px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .tl { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 20px 0; }
+  .tl-title { font-weight: 700; margin-bottom: 10px; }
+  .tl-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; margin: 7px 0; }
+  .tl-label { font-size: 13.5px; color: var(--muted); text-align: right; }
+  .tl-track { position: relative; height: 30px; background: var(--code-bg); border-radius: 7px; }
+  .bar { position: absolute; top: 3px; height: 24px; border-radius: 6px; font-size: 12px; line-height: 24px; padding: 0 8px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .bar.blue { background: #2f5bea; } .bar.green { background: #16794c; } .bar.red { background: #c0392b; }
+  .bar.grey { background: #7b8499; } .bar.amber { background: #b9770e; } .bar.purple { background: #7a3fb0; }
+  .tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 6px 0 0 142px; }
+  .tl-note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .bar.out { overflow: visible; padding: 0; }
+  .bar.out span { position: absolute; left: 100%; margin-left: 8px; color: var(--text); }
+  .marker { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--bad); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; margin-bottom: 2px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+  .steps { list-style: none; counter-reset: s; padding: 0; margin: 16px 0; }
+  .steps li { counter-increment: s; position: relative; padding: 4px 0 12px 46px; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 2px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  .status { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  .status.done { background: var(--good-soft); color: var(--good); }
+  .status.todo { background: var(--code-bg); color: var(--muted); }
+  .status.next { background: var(--warn-soft); color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding-top: 18px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; gap: 0; }
+    nav.toc { display: none; }
+    h1 { font-size: 2rem; }
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-label { text-align: left; }
+    .tl-axis { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Week 4</div>
+  <a href="#big-picture">The big picture</a>
+  <a href="#when">1. When native code helps</a>
+  <a href="#extension">2. What an extension is</a>
+  <a href="#bytes">3. Bytes vs characters</a>
+  <a href="#gil">4. A thread is not enough</a>
+  <a href="#testing">5. The bug only random input found</a>
+  <a href="#speed">6. Speed, honestly</a>
+  <a href="#gateway">7. In the gateway</a>
+  <a href="#build">8. Built where it runs</a>
+  <a href="#progress">Progress and next</a>
+  <a href="week03.html">&larr; Week 3</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI Infra Platform &middot; Week 4</div>
+  <h1>C++ in the gateway: a thread is not enough</h1>
+  <p class="lead">The gateway now cleans every prompt in C++, bound to Python with pybind11. It made the gateway no faster: a prompt cleans in 2.4&nbsp;&micro;s against 2.73&nbsp;s of inference.
+  What it did teach: native code can freeze an async server from any thread, random testing finds what examples miss, and native code has to be built where it runs.</p>
+  <div class="stats">
+    <div class="stat"><b>244 ms &rarr; 12 ms</b><span>event-loop freeze while cleaning 20 MB on a worker thread, GIL held vs released</span></div>
+    <div class="stat"><b>4&times;</b><span>C++ vs the fastest Python, at every size (not the 10&times; a slow baseline suggested)</span></div>
+    <div class="stat"><b>6 / 6</b><span>planted C++ bugs caught; one only by the property test</span></div>
+    <div class="stat"><b>293 MB</b><span>gateway image, unchanged: the compiler stays in the builder stage</span></div>
+  </div>
+</header>
+
+<section id="big-picture">
+<h2>The big picture</h2>
+<p class="sub">Python for orchestration, a compiled library for the hot loop.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TD
+  C["Client"] --> RL{{"Rate limit (429)"}}
+  RL --> CL["Clean the prompt<br/>promptclean (C++)"]
+  CL --> AD{{"Admission (503)"}}
+  AD --> M["Model server"]
+  subgraph PKG["promptclean package"]
+    REF["reference.py<br/>defines correct"]
+    CPP["promptclean.cpp<br/>one pass, UTF-8"]
+    REF -. "same output on 6,000 random strings" .- CPP
+  end
+  CL -.-> PKG
+</pre>
+<figcaption>A separate package, compiled on install, used by the gateway.</figcaption>
+</figure>
+<p>The rules: remove invisible characters (zero-width spaces, bidi overrides) and control characters, collapse whitespace, cap the length if asked. The zero-width joiner is kept, because emoji are built from it.</p>
+<div class="callout idea"><b>Is this normal?</b><p>Writing your own C++ inside a web service is rare: profiling usually points at the network, the database or the model. Using native code is universal: FastAPI's validation (pydantic-core) is Rust, uvloop and the HTTP parsers are C. In AI infra, native code lives in libraries: tokenizers, vLLM, PyTorch extensions, Triton backends.</p></div>
+</section>
+
+<section id="when">
+<h2><span class="num">1</span>When native code helps</h2>
+<p class="sub">It's about what the inner loop touches, not the language.</p>
+<p>Removing 5 characters from 9.6 million, four ways:</p>
+<div class="table-wrap"><table>
+<tr><th>Approach</th><th>Time</th></tr>
+<tr><td>Hand-written Python loop</td><td>135 ms</td></tr>
+<tr><td><code>str.translate</code> with a dict (written in C)</td><td><b>358 ms</b>: slower than the loop</td></tr>
+<tr><td>Regex (C)</td><td>37 ms</td></tr>
+<tr><td><code>str.replace</code> &times; 5 (C)</td><td><b>7 ms</b></td></tr>
+</table></div>
+<p><code>translate</code> is written in C but looks up every character in a Python dict, so it still pays the per-object cost. <code>replace</code> scans raw memory. The rule: <b>fast code is code whose inner loop touches no Python objects.</b></p>
+</section>
+
+<section id="extension">
+<h2><span class="num">2</span>What an extension is</h2>
+<p class="sub">A compiled library Python loads like a plugin.</p>
+<p><code>import promptclean</code> loads <code>_native.cpython-312-darwin.so</code>: 145&nbsp;KB of machine code. The filename is a contract: CPython 3.12, macOS. It won't load on Linux. pybind11 writes the glue (type conversion, reference counting, exceptions) that the raw C API would make you write by hand.</p>
+<div class="callout java"><b>Java analogy</b><p>JNI, without the boilerplate: a native library, loaded at runtime, called like a normal method.</p></div>
+</section>
+
+<section id="bytes">
+<h2><span class="num">3</span>Bytes vs characters</h2>
+<p class="sub">The main correctness trap.</p>
+<div class="table-wrap"><table>
+<tr><th></th><th>Python <code>str</code></th><th>C++ <code>std::string</code></th></tr>
+<tr><td>Unit</td><td>characters</td><td>UTF-8 bytes</td></tr>
+<tr><td>zero-width space</td><td>length 1</td><td>3 bytes: <code>E2 80 8B</code></td></tr>
+<tr><td>&#x1F642;</td><td>length 1</td><td>4 bytes</td></tr>
+</table></div>
+<p>The C++ decodes 1 to 4 bytes per character, and the length cap counts characters, so it can never split one.</p>
+</section>
+
+<section id="gil">
+<h2><span class="num">4</span>A thread is not enough</h2>
+<p class="sub">Week 2's freeze, in native code.</p>
+<div class="tl"><div class="tl-title">Worst event-loop lag while 20 MB is cleaned</div>
+<div class="tl-row"><div class="tl-label">Directly in the coroutine</div><div class="tl-track"><div class="bar red" style="left:0;width:94.6%">246 ms</div></div></div>
+<div class="tl-row"><div class="tl-label">to_thread, GIL held</div><div class="tl-track"><div class="bar red" style="left:0;width:93.8%">244 ms</div></div></div>
+<div class="tl-row"><div class="tl-label">to_thread, GIL released</div><div class="tl-track"><div class="bar green out" style="left:0;width:4.6%"><span>12 ms</span></div></div></div>
+<div class="tl-axis"><span>0 ms</span><span>65 ms</span><span>130 ms</span><span>195 ms</span><span>260 ms</span></div>
+<p class="tl-note">Moving the call to a worker thread changed nothing until the C++ released the GIL.</p></div>
+<p>A worker thread inside C++ still holds Python's GIL, and the event loop needs it to run any Python. The binding now releases it: <code>py::call_guard&lt;py::gil_scoped_release&gt;()</code>. That's safe because pybind11 copies the input before the guard and builds the result after it. The 12&nbsp;ms left is converting the 20&nbsp;MB result back into a Python string.</p>
+<div class="callout gotcha"><b>Why Week 2 didn't hit this</b><p><code>to_thread(model.generate)</code> worked because PyTorch releases the GIL inside its heavy operations. Our C++ didn't, until it was told to.</p></div>
+</section>
+
+<section id="testing">
+<h2><span class="num">5</span>The bug only random input found</h2>
+<p class="sub">A readable reference, and a property test against it.</p>
+<p>The rule tests run against both the Python reference and the C++. A property test (<code>hypothesis</code>) feeds 6,000 random strings, weighted toward the tricky characters, and requires identical output. Six realistic C++ bugs were planted: all were caught. One, a control-character range off by one, was missed by all 21 hand-written examples and caught only by random input.</p>
+<div class="callout bug"><b>And one real bug, found by a failing test</b><p>A lone surrogate (<code>"\ud800"</code>, legal in JSON) crashed the gateway. The fallback caught <code>UnicodeEncodeError</code>, but pybind11 raises <code>TypeError</code>. Test the failure path, not the error you expect.</p></div>
+</section>
+
+<section id="speed">
+<h2><span class="num">6</span>Speed, honestly</h2>
+<p class="sub">Against the best Python, not a convenient one.</p>
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>Python reference</th><th>Fastest Python</th><th>C++</th><th>vs fastest</th></tr>
+<tr><td>Prompt (200 chars)</td><td>21 &micro;s</td><td>10 &micro;s</td><td>2.4 &micro;s</td><td>4&times;</td></tr>
+<tr><td>1 KB</td><td>104 &micro;s</td><td>49 &micro;s</td><td>12 &micro;s</td><td>4&times;</td></tr>
+<tr><td>100 KB</td><td>10 ms</td><td>4.6 ms</td><td>1.2 ms</td><td>4&times;</td></tr>
+<tr><td>10 MB</td><td>1,043 ms</td><td>509 ms</td><td>109 ms</td><td>4.7&times;</td></tr>
+</table></div>
+<div class="callout measured"><b>The ratio is constant; the value isn't</b><p>Crossing into C++ costs ~0.3&nbsp;ms per 10&nbsp;MB, so C++ is 4&times; faster even on a prompt. But that saves 7.5&nbsp;&micro;s against 2.73&nbsp;s of inference. It matters only for documents and datasets.</p></div>
+</section>
+
+<section id="gateway">
+<h2><span class="num">7</span>In the gateway</h2>
+<p class="sub">Clean before taking a slot; thread only when it pays.</p>
+<p>Prompts are cleaned before admission, so a big clean never holds the model's only slot. Under 64&nbsp;K characters they're cleaned inline (a thread hop costs more than 2&nbsp;&micro;s); above, on a worker thread. A body that isn't a chat request is forwarded unchanged, and <code>/health</code> counts the characters removed.</p>
+</section>
+
+<section id="build">
+<h2><span class="num">8</span>Built where it runs</h2>
+<p class="sub">Docker and CI compile the C++ themselves.</p>
+<div class="cards">
+  <div class="card"><b>Multi-stage image</b><p>Compiler and CMake in the builder stage only. The image stays 293&nbsp;MB, with no compiler inside.</p></div>
+  <div class="card"><b>CMake from Debian</b><p>The first build spent 3 minutes failing to download CMake from PyPI. Now it's installed with the compiler; the compile takes 2.5&nbsp;s.</p></div>
+  <div class="card"><b>A build matrix</b><p>The tests run on Linux (gcc, x86_64) and macOS (clang, arm64): native code must work wherever it's compiled.</p></div>
+  <div class="card"><b>Pinned build tools</b><p><code>uv.lock</code> doesn't cover build dependencies, so scikit-build-core and pybind11 are pinned exactly.</p></div>
+</div>
+</section>
+
+<section id="progress">
+<h2>Progress and next steps</h2>
+<ol class="steps">
+  <li><b>Python reference + rule tests</b><span class="status done">done</span></li>
+  <li><b>Package skeleton: pybind11, scikit-build-core, CMake</b><span class="status done">done</span></li>
+  <li><b>C++ cleaner, one pass, UTF-8 aware</b><span class="status done">done</span></li>
+  <li><b>Property test against the reference</b><span class="status done">done</span> &middot; caught what examples missed</li>
+  <li><b>Measure</b><span class="status done">done</span> &middot; 4&times; the fastest Python</li>
+  <li><b>Release the GIL</b><span class="status done">done</span> &middot; 244 ms &rarr; 12 ms</li>
+  <li><b>Wire into the gateway</b><span class="status done">done</span></li>
+  <li><b>Docker and CI</b><span class="status done">done</span> &middot; same 293 MB image, build matrix</li>
+  <li><b>Faster C++</b><span class="status todo">exercise</span> &middot; copy runs of plain characters in bulk</li>
+</ol>
+<h3>Run it yourself</h3>
+<pre><code>uv sync --group dev --group week04
+uv run pytest week04-cpp-cleaner/tests
+uv run python week04-cpp-cleaner/scripts/gil_demo.py</code></pre>
+</section>
+
+<footer>
+  Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
+  Timings from an Apple-silicon Mac, best of several runs; treat them as illustrations, not benchmarks. <a href="week03.html">Week 3: The Gateway</a>
+</footer>
+</main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: mq.matches ? "dark" : "default",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  });
+  mq.addEventListener("change", () => location.reload());
+
+  const links = [...document.querySelectorAll("nav.toc a")];
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        map.get(e.target.id)?.classList.add("active");
+      }
+    }
+  }, { rootMargin: "-10% 0px -80% 0px" });
+  document.querySelectorAll("main section[id]").forEach(s => io.observe(s));
+</script>
+</body>
+</html>
+

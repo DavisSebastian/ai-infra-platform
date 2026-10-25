@@ -14,7 +14,7 @@ import os
 import time
 
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 CHUNKS = int(os.getenv("FAKE_CHUNKS", "20"))
@@ -24,6 +24,7 @@ FIRST_CHUNK_DELAY = float(os.getenv("FAKE_FIRST_DELAY", "0.0"))  # simulated pro
 app = FastAPI(title="Fake model server")
 
 stats = {"started": 0, "finished": 0, "cancelled": 0, "active": 0, "max_active": 0}
+last_request: dict = {}  # the last chat request received, so tests can see what the gateway actually forwarded
 
 
 class ChatRequest(BaseModel):
@@ -80,8 +81,17 @@ async def get_stats():
     return stats
 
 
+@app.get("/_last_request")
+async def get_last_request():
+    # json.dumps escapes everything to ASCII by default ("\\ud800"), so even a lone surrogate the gateway forwarded
+    # can be returned. FastAPI's default JSON response would fail to encode it as UTF-8.
+    return Response(content=json.dumps(last_request), media_type="application/json")
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(body: ChatRequest):
+    last_request.clear()
+    last_request.update(body.model_dump())
     n = min(body.max_tokens or CHUNKS, CHUNKS)
     if body.stream:
         return StreamingResponse(

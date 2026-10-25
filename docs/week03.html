@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Week 3: The Gateway</title>
-<meta name="description" content="A gateway in front of a one-at-a-time LLM server: streaming proxy, token bucket rate limiting in Redis, and backpressure that turns a 17 s wait into a fast no.">
+<meta name="description" content="A gateway in front of a one-at-a-time LLM server: streaming proxy, token bucket rate limiting in Redis, and backpressure that cut the worst wait on an RTX 4090 from 41 s to 5.5 s.">
 <style>
   :root {
     --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
@@ -152,11 +152,11 @@
 <header class="hero">
   <div class="eyebrow">AI Infra Platform &middot; Week 3</div>
   <h1>The Gateway: a fast no beats a slow yes</h1>
-  <p class="lead">Week 2's model server does one generation at a time, and it can't say "I'm full". With 16 users at once, the last one waited 56 seconds on an RTX 4090.
+  <p class="lead">Week 2's model server does one generation at a time, and it can't say "I'm full". With 16 users at once, the last one waited 41 seconds for a first word on an RTX 4090.
   This week a gateway sits in front of it: it limits each client, bounds the line, and turns everyone else away in milliseconds.</p>
   <div class="stats">
-    <div class="stat"><b>12.1 s &rarr; 1.7 s</b><span>worst wait for the first word, 16 users, bare server vs gateway</span></div>
-    <div class="stat"><b>4 ms</b><span>time to reject the 13 users who couldn't be served in time</span></div>
+    <div class="stat"><b>41 s &rarr; 5.5 s</b><span>worst wait for the first word, 16 users, Llama 3.1 8B on an RTX 4090, bare vs gateway</span></div>
+    <div class="stat"><b>172 s &rarr; 5.5 s</b><span>the same at 64 users: the gateway's worst wait doesn't grow with the crowd</span></div>
     <div class="stat"><b>50 &rarr; 10</b><span>requests let through a limit of 10: naive Redis limiter vs Lua</span></div>
     <div class="stat"><b>9.34 GB &rarr; 293 MB</b><span>model-server image vs gateway image</span></div>
   </div>
@@ -280,7 +280,26 @@ store permits AND updated_at = now, together</code></pre>
 
 <section id="results">
 <h2><span class="num">9</span>Results</h2>
-<p class="sub">Step 7: the real Week 2 server, bare vs behind the gateway.</p>
+<p class="sub">On a real GPU: the Week 2 server running Llama 3.1 8B, bare vs behind the gateway, in one RunPod pod, measured inside the pod.</p>
+<div class="tl"><div class="tl-title">Worst wait for the first word: Llama 3.1 8B, RTX 4090, all users at once</div>
+<div class="tl-row"><div class="tl-label">16 users, bare</div><div class="tl-track"><div class="bar red" style="left:0;width:22.8%">41 s</div></div></div>
+<div class="tl-row"><div class="tl-label">16 users, gateway</div><div class="tl-track"><div class="bar green out" style="left:0;width:3.1%"><span>5.5 s</span></div></div></div>
+<div class="tl-row"><div class="tl-label">64 users, bare</div><div class="tl-track"><div class="bar red" style="left:0;width:95.6%">172 s</div></div></div>
+<div class="tl-row"><div class="tl-label">64 users, gateway</div><div class="tl-track"><div class="bar green out" style="left:0;width:3.1%"><span>5.5 s</span></div></div></div>
+<div class="tl-axis"><span>0 s</span><span>45 s</span><span>90 s</span><span>135 s</span><span>180 s</span></div>
+<p class="tl-note">The gateway served 3 users and told the rest "busy, retry in 5 s" within 11 ms (16 users) and 54 ms (64 users). The bare server served everyone, eventually.</p></div>
+<div class="table-wrap"><table>
+<tr><th>Users</th><th>Bare: worst wait</th><th>Gateway: served / rejected</th><th>Gateway: worst wait</th><th>Time to reject</th></tr>
+<tr><td>1</td><td>0.06 s</td><td>1 / 0</td><td>0.07 s</td><td>n/a</td></tr>
+<tr><td>4</td><td>8.2 s</td><td>3 / 1</td><td>5.5 s</td><td>3 ms</td></tr>
+<tr><td>16</td><td>41 s</td><td>3 / 13</td><td>5.5 s</td><td>11 ms</td></tr>
+<tr><td>64</td><td>172 s</td><td>3 / 61</td><td>5.5 s</td><td>54 ms</td></tr>
+</table></div>
+<p>Repeated three times at 16 users: bare worst 41.1 / 41.0 / 40.8 s, gateway worst 5.47 / 5.50 / 5.48 s.</p>
+<div class="callout measured"><b>One number predicts all of it</b><p>One answer takes 2.73 s. The last of 16 users on the bare server waits behind 15 answers: 15 &times; 2.73 &asymp; 41 s. The last user the gateway accepts waits for two answers, then its own first word: 2 &times; 2.73 + 0.07 &asymp; 5.5 s. That is Little's Law from Week 1, correct to within a fraction of a second.</p></div>
+<div class="callout gotcha"><b>The prediction was off, the formula wasn't</b><p>The prediction before the run was ~8 s for the gateway, using Week 2's 3.7 s per answer. That figure was measured from a laptop through RunPod's proxy, so it included network time. Measured inside the pod, an answer takes 2.73 s, and the same formula gives exactly what happened.</p></div>
+<div class="callout idea"><b>What it does not do</b><p>At 16 users the bare server finished 16 answers in 43.6 s, 2.72 s each: the same as for one user. Backpressure adds no capacity. The bare server eventually served all 16; the gateway served 3 and told 13 to come back. More capacity is continuous batching, in Month 3.</p></div>
+<h3>The same test on a laptop (Qwen 0.5B, Mac)</h3>
 <div class="tl"><div class="tl-title">Worst wait for the first word (Qwen 0.5B on the Mac, all users at once)</div>
 <div class="tl-row"><div class="tl-label">16 users, bare</div><div class="tl-track"><div class="bar red" style="left:0;width:15.1%">12.1 s</div></div></div>
 <div class="tl-row"><div class="tl-label">16 users, gateway</div><div class="tl-track"><div class="bar green out" style="left:0;width:2.1%"><span>1.7 s</span></div></div></div>
@@ -295,8 +314,8 @@ store permits AND updated_at = now, together</code></pre>
 <tr><td>16</td><td>12.1 s</td><td>3 / 13</td><td>1.7 s</td><td>4 ms</td></tr>
 <tr><td>64</td><td>64.5 s</td><td>3 / 61</td><td>1.8 s</td><td>14 ms</td></tr>
 </table></div>
-<p>Repeated three times at 16 users: bare worst 12.1 / 17.0 / 14.2 s, gateway worst 1.7 / 3.3 / 3.0 s, 13 rejected each time in 3&ndash;4 ms.</p>
-<div class="callout idea"><b>What it does not do</b><p>Total output stayed about 55 chunks/s in every run. Backpressure adds no capacity: it stops accepting work that can't be done in time. The bare server eventually served all 16; the gateway served 3 and told 13 to come back. More capacity is continuous batching, in Month 3.</p></div>
+<p>Repeated three times at 16 users: bare worst 12.1 / 17.0 / 14.2 s, gateway worst 1.7 / 3.3 / 3.0 s, 13 rejected each time in 3&ndash;4 ms. Answer lengths vary more on the small model, so the numbers wander more than on the GPU.</p>
+
 </section>
 
 <section id="tests">
@@ -320,9 +339,9 @@ store permits AND updated_at = now, together</code></pre>
   <li><b>Token bucket</b><span class="status done">done</span> &middot; naive 50 of 50 vs Lua exactly 10</li>
   <li><b>Backpressure</b><span class="status done">done</span> &middot; 1 in flight, queue of 2, fast 503s</li>
   <li><b>Load test that knows "no"</b><span class="status done">done</span> &middot; accepted vs rejected, time to reject</li>
-  <li><b>Measure</b><span class="status done">done</span> &middot; worst wait 12.1 s &rarr; 1.7 s at 16 users</li>
+  <li><b>Measure on the Mac</b><span class="status done">done</span> &middot; worst wait 12.1 s &rarr; 1.7 s at 16 users</li>
   <li><b>Docker and CI</b><span class="status done">done</span> &middot; 293 MB image, compose smoke test</li>
-  <li><b>On the GPU</b><span class="status todo">optional</span> &middot; prediction: the 56 s wait bounded at about 8&ndash;11 s</li>
+  <li><b>On the GPU</b><span class="status done">done</span> &middot; Llama 3.1 8B on an RTX 4090: 41 s &rarr; 5.5 s at 16 users, 172 s &rarr; 5.5 s at 64, $0.53</li>
 </ol>
 <h3>Run it yourself</h3>
 <pre><code>cd week03-gateway
@@ -335,7 +354,7 @@ docker compose down</code></pre>
 
 <footer>
   Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
-  Results are from an Apple-silicon Mac with Qwen2.5-0.5B-Instruct and a fake model server; small samples, so treat them as illustrations, not benchmarks. <a href="index.html">Week 2: The Thin Slice</a>
+  GPU results: Llama 3.1 8B on a RunPod RTX 4090, measured inside the pod. Laptop results: Qwen2.5-0.5B on an Apple-silicon Mac. Small samples (one burst of users per run, 16 users repeated three times), so treat them as illustrations, not benchmarks. <a href="index.html">Week 2: The Thin Slice</a>
 </footer>
 </main>
 </div>

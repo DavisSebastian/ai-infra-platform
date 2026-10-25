@@ -1,6 +1,6 @@
 """Week 3: the gateway in front of the model server.
 
-POST /v1/chat/completions   rate limit (429) -> admission (503) -> forwarded to UPSTREAM_URL, chunks relayed live
+POST /v1/chat/completions   rate limit (429) -> clean prompt (C++) -> admission (503) -> forwarded, chunks relayed live
 GET  /health
 
 Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn app.main:app --port 8080   (from week03-gateway/)
@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from app.admission import Admission, ClientGone, Rejected
 from app.redis_limiter import RedisTokenBucket
+from app.sanitize import clean_body
 from app.upstream import UpstreamClient, make_client
 
 log = logging.getLogger("uvicorn.error")
@@ -50,6 +51,11 @@ MAX_QUEUE = int(os.getenv("MAX_QUEUE", "2"))
 QUEUE_TIMEOUT = float(os.getenv("QUEUE_TIMEOUT", "10"))
 OVERLOAD_RETRY_AFTER = int(os.getenv("OVERLOAD_RETRY_AFTER", "5"))  # seconds, sent with every 503
 
+# Prompt cleaning (Week 4, C++ via pybind11): strip invisible/control characters and excess whitespace before
+# forwarding. PROMPT_MAX_CHARS caps each message's text (unset = no cap).
+CLEAN_PROMPTS = os.getenv("CLEAN_PROMPTS", "1") == "1"
+PROMPT_MAX_CHARS = int(os.environ["PROMPT_MAX_CHARS"]) if os.getenv("PROMPT_MAX_CHARS") else None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,6 +76,7 @@ async def lifespan(app: FastAPI):
     app.state.rate_limit_fail_open = 0  # how many requests were let through UNCHECKED because Redis failed
     app.state.admission = Admission(MAX_IN_FLIGHT, MAX_QUEUE, QUEUE_TIMEOUT)
     app.state.counts = {"overloaded": 0, "queue_timeout": 0, "client_gone": 0, "upstream_error": 0}
+    app.state.cleaning = {"requests_changed": 0, "chars_removed": 0}
     yield
     await app.state.redis.aclose()
     await app.state.upstream.aclose()
@@ -95,6 +102,7 @@ async def health(request: Request):
         "in_flight": request.app.state.admission.in_flight,
         "queued": request.app.state.admission.queued,
         "rejected": request.app.state.counts,
+        "cleaning": request.app.state.cleaning,
         "upstream": UPSTREAM_URL,
         "client": PROXY_CLIENT,
     }
@@ -165,10 +173,16 @@ async def chat_completions(request: Request):
     if rejected is not None:
         return rejected
 
-    # Forward the body as-is. The gateway doesn't need to understand it (yet): fewer places to go wrong.
     body = await request.body()
 
-    # 2. Admission: wait for a turn at the upstream, or be turned away.
+    # 2. Clean the prompt text (C++), BEFORE taking a slot: a big clean shouldn't hold the model's only slot.
+    if CLEAN_PROMPTS:
+        body, removed = await clean_body(body, PROMPT_MAX_CHARS)
+        if removed:
+            request.app.state.cleaning["requests_changed"] += 1
+            request.app.state.cleaning["chars_removed"] += removed
+
+    # 3. Admission: wait for a turn at the upstream, or be turned away.
     admission: Admission = request.app.state.admission
     counts = request.app.state.counts
 
@@ -186,7 +200,7 @@ async def chat_completions(request: Request):
         counts["client_gone"] += 1
         return Response(status_code=499)  # nobody is listening; nothing was sent upstream
 
-    # 3. Forward. From here on, every path must release the slot exactly once.
+    # 4. Forward. From here on, every path must release the slot exactly once.
     upstream: UpstreamClient = request.app.state.upstream
     try:
         resp = await upstream.open("/v1/chat/completions", body)

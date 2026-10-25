@@ -7,6 +7,7 @@ This week puts a gateway in front of it. The gateway decides who gets in, bounds
 ```
 Client ──SSE──► [ Gateway :8080 ] ─────────────────────────────► [ Model server ]
                   1. rate limit per client     → 429   (Redis, token bucket, Lua)
+                     clean the prompt text            (C++ via pybind11, since Week 4)
                   2. admission: 1 in flight,   → 503   (in memory)
                      queue of 2, 10 s timeout
                   3. pooled upstream client, bytes relayed as they arrive
@@ -58,6 +59,8 @@ uv run pytest -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests
 | `QUEUE_TIMEOUT` | 10 | Seconds a request may wait before a 503 |
 | `OVERLOAD_RETRY_AFTER` | 5 | `Retry-After` seconds sent with a 503 |
 | `PROXY_CLIENT` | `aiohttp` | `httpx` is available for comparison |
+| `CLEAN_PROMPTS` | `1` | Clean prompt text with the C++ `promptclean` before forwarding (Week 4); `0` turns it off |
+| `PROMPT_MAX_CHARS` | unset | Cap each message's text at N characters |
 
 The image sets `REDIS_URL=redis://redis:6379` and `UPSTREAM_URL=http://fake:9000`, the compose service names.
 
@@ -121,6 +124,10 @@ POST /v1/chat/completions
   │
   ├─ 1. rate limit: Lua token bucket in Redis, keyed by hashed API key (else IP)
   │        over budget → 429 + Retry-After          Redis down or slow → let it through, count it
+  │
+  ├─ clean the prompt (app/sanitize.py → Week 4's C++ promptclean): invisible/control characters, whitespace,
+  │        optional cap. Small prompts inline, big ones on a worker thread (the C++ releases the GIL).
+  │        Not JSON / no messages list → forwarded unchanged.   /health counts what was removed.
   │
   ├─ 2. admission (app/admission.py)
   │        slot free, nobody waiting → go

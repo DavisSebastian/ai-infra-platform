@@ -1,6 +1,6 @@
 # Week 3 — The Gateway
 
-Week 2's model server handles one generation at a time. With 16 users arriving at once, the last one waited **56 seconds** for a first word on an RTX 4090. The server can't say "I'm full", so the line just grows.
+Week 2's model server handles one generation at a time. With 16 users arriving at once, the last one waited **56 seconds** for a first word on an RTX 4090 (measured through RunPod's proxy; 41 s measured inside the pod). The server can't say "I'm full", so the line just grows.
 
 This week puts a gateway in front of it. The gateway decides who gets in, bounds how long anyone waits, and turns everyone else away in milliseconds.
 
@@ -63,7 +63,28 @@ The image sets `REDIS_URL=redis://redis:6379` and `UPSTREAM_URL=http://fake:9000
 
 ## Results
 
-### Backpressure: the bare server vs the gateway
+### Backpressure on a GPU: Llama 3.1 8B, RTX 4090
+
+The Week 2 server running Llama 3.1 8B on a RunPod RTX 4090, bare vs behind the gateway, in the same pod and the same session. Load test run **inside the pod** (no proxy, no network time). All users arrive at once, 100 tokens each, the prompt from Week 2. Gateway: 1 in flight, queue of 2, rate limiting off. Commit `53b757a`. Raw numbers: [`results/llama8b-4090.jsonl`](results/llama8b-4090.jsonl). Steps: [`RUNBOOK.md`](RUNBOOK.md).
+
+| Users | Bare: worst wait for first word | Gateway: served / rejected | Gateway: worst wait | Gateway: time to reject |
+|---|---|---|---|---|
+| 1 | 0.06 s | 1 / 0 | 0.07 s | n/a |
+| 4 | 8.2 s | 3 / 1 | 5.5 s | 3 ms |
+| 16 | **41 s** | 3 / 13 | **5.5 s** | 11 ms |
+| 64 | **172 s** | 3 / 61 | **5.5 s** | 54 ms |
+
+c=16 repeated three times: bare worst 41.1 / 41.0 / 40.8 s, gateway worst 5.47 / 5.50 / 5.48 s, 13 rejected each time in 11–13 ms. No `queue_timeout` rejections.
+
+**The gateway's worst wait is 5.5 s whether 4, 16 or 64 users arrive.** The bare server's grows with the crowd.
+
+**The numbers follow from one figure.** One answer takes 2.73 s (the single-user run). The last of 16 users on the bare server waits behind 15 answers: 15 × 2.73 ≈ 41 s. The last user the gateway accepts waits for two answers and then its own first word: 2 × 2.73 + 0.07 ≈ 5.5 s. Little's Law from Week 1 predicts both to within a fraction of a second. The prediction written before the run (~55 s bare, ~8 s gateway) used Week 2's 3.7 s per answer, which was measured through RunPod's proxy and included network time; the formula was right, the input was not.
+
+**Capacity did not change:** at 16 users the bare server finished 16 answers in 43.6 s, 2.72 s each, the same as for one user.
+
+Setup: VRAM 15,960 MiB of 24,564 MiB with the model loaded and idle. Model download and load: 43.2 s. Session cost: **$0.53**.
+
+### Backpressure on a laptop: Qwen 0.5B, Mac
 
 Week 2 server, Qwen2.5-0.5B on an M-series Mac. All users arrive at once (`n = c`), 100 tokens each, the same shape as Week 2's measurements. Gateway: 1 in flight, queue of 2. Rate limiting off, so only backpressure decides. Raw numbers: [`results/qwen05b-mac.jsonl`](results/qwen05b-mac.jsonl).
 
@@ -84,12 +105,11 @@ c=16 three times on each, because answer lengths vary between runs:
 
 **How to read this:**
 
-- **The wait is bounded.** The bare server's worst wait grows with the crowd (12 s at 16 users, 64 s at 64). Through the gateway it stays at roughly three answers' worth, whatever the crowd: one running, two queued.
+- **The wait is bounded.** The bare server's worst wait grows with the crowd (12 s at 16 users, 64 s at 64). Through the gateway it stays at about two answers plus a first word, whatever the crowd: one running, two queued. Answer lengths vary more on the Mac, so the gateway's worst wait here ranges from 1.7 to 3.3 s; on the GPU it was steady at 5.5 s.
 - **Everyone else hears "no" fast.** 13 of 16 got a 503 with `Retry-After` in a few milliseconds, instead of waiting up to 17 s.
 - **Capacity did not change.** Total output was about 55 chunks/s in every run, bare or gateway. Backpressure adds no capacity. It stops the server from accepting work it can't do in a reasonable time. More capacity is continuous batching (vLLM, Month 3).
 - **The trade is real.** The bare server eventually served all 16; the gateway served 3. A client that honours `Retry-After` comes back later. Whether that is better depends on the product: for a chat UI, a fast "busy" beats a 17 s blank screen.
 
-Not measured: this run was on the Mac, not the GPU. On the RTX 4090 one answer took about 3.7 s, so the same settings would bound the wait at roughly 8–11 s instead of the 56 s Week 2 measured. That is a prediction, not a result.
 
 ### The rate limiter race
 
@@ -181,8 +201,9 @@ The gateway image also runs the fake model server (`uvicorn app.fake_upstream:ap
 
 ## Lessons learned
 
-1. **A fast no beats a slow yes.** Bounding the queue cut the worst wait from 12–17 s to 1.7–3.3 s at 16 users, without adding any capacity.
-2. **Correct arithmetic is not enough.** The naive limiter used the right formula and still let 5x the limit through, because of the gap between two commands.
-3. **Check what you think you are measuring.** A 458 ms "slow proxy" was a connection pool that was too small; an aiohttp-vs-httpx gap of 90x only showed up at high concurrency.
-4. **Cleanup has more exits than you think.** A streaming response can end normally, be cancelled, or never start. Only one of those runs a generator's `finally`.
-5. **Break your code to test your tests.** Mutation checks found gaps in tests written minutes earlier, and one real bug.
+1. **A fast no beats a slow yes.** On the RTX 4090, bounding the queue cut the worst wait from 41 s to 5.5 s at 16 users and from 172 s to 5.5 s at 64, without adding any capacity.
+2. **Queueing math predicts the result, if the inputs are measured where the system runs.** 2 × 2.73 s + first word = 5.5 s, exactly. The prediction made from a per-answer time measured through a proxy was 45% too high (8 s predicted, 5.5 s measured).
+3. **Correct arithmetic is not enough.** The naive limiter used the right formula and still let 5x the limit through, because of the gap between two commands.
+4. **Check what you think you are measuring.** A 458 ms "slow proxy" was a connection pool that was too small; an aiohttp-vs-httpx gap of 90x only showed up at high concurrency.
+5. **Cleanup has more exits than you think.** A streaming response can end normally, be cancelled, or never start. Only one of those runs a generator's `finally`.
+6. **Break your code to test your tests.** Mutation checks found gaps in tests written minutes earlier, and one real bug.

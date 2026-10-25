@@ -2,7 +2,7 @@
 
 Goal: measure the Week 2 model server **bare vs behind the gateway** on a real GPU, record the numbers, and **shut the pod down**. This turns the README's prediction ("Week 2's 56 s worst wait becomes ~8–11 s") into a result.
 
-Budget: **about 1 hour, under $1.50** at ~$0.90/hour for an RTX 4090.
+Budget: **about 1 hour, under $1.50** at ~$0.90/hour for an RTX 4090. First run (2026-10-25): about 35 minutes, **$0.53**. Results: [`results/llama8b-4090.jsonl`](results/llama8b-4090.jsonl).
 
 > RunPod screen names are from memory and may have changed. Where something matters there is a check to run. If the UI differs, trust the UI and fix this file afterwards.
 
@@ -87,12 +87,14 @@ uv sync --locked --group week02 --group week03
 
 `--locked` fails if `uv.lock` doesn't match, so the pod gets exactly the versions CI tested. Expect a few minutes (torch and the CUDA libraries are several GB).
 
+**Port 8001 is taken inside the PyTorch template** (its own nginx listens there), so the model server uses **8002**. Check before starting: `ss -ltn | awk 'NR>1 {print $4}' | sort -u` must not list `:8002` or `:8080`.
+
 Start the **model server** in the background (`nohup` keeps it alive if the web terminal disconnects):
 
 ```bash
 cd ~/ai-infra-platform/week02-thin-slice
 MODEL_ID=meta-llama/Llama-3.1-8B-Instruct DEVICE=cuda HF_HOME=$HOME/hf \
-  nohup uv run uvicorn app.main:app --port 8001 > ~/model.log 2>&1 &
+  nohup uv run uvicorn app.main:app --port 8002 > ~/model.log 2>&1 &
 tail -f ~/model.log
 ```
 
@@ -102,10 +104,10 @@ Start the **gateway** in front of it:
 
 ```bash
 cd ~/ai-infra-platform/week03-gateway
-UPSTREAM_URL=http://127.0.0.1:8001 RATE_LIMIT_ENABLED=0 \
+UPSTREAM_URL=http://127.0.0.1:8002 RATE_LIMIT_ENABLED=0 \
   nohup uv run uvicorn app.main:app --port 8080 > ~/gateway.log 2>&1 &
 sleep 3
-curl -s localhost:8001/health; echo
+curl -s localhost:8002/health; echo
 curl -s localhost:8080/health; echo
 ```
 
@@ -130,10 +132,14 @@ Run it in the background so a terminal disconnect can't kill it, then watch:
 
 ```bash
 cd ~/ai-infra-platform/week03-gateway
-OUT=results/llama8b-4090.jsonl LABEL="Llama 3.1 8B, <GPU model>, RunPod, measured in-pod" \
+BARE_URL=http://127.0.0.1:8002 OUT=results/llama8b-4090.jsonl LABEL="Llama 3.1 8B, <GPU model>, RunPod, measured in-pod" \
   nohup ./scripts/bench_matrix.sh > ~/bench.log 2>&1 &
 tail -f ~/bench.log
 ```
+
+`tail -f` never returns by itself; **Control+C** leaves it (Command+C on a Mac is copy) and the benchmark keeps running.
+
+> **Known issue:** on the first run `~/bench.log` stayed **empty** (0 lines) for the whole run, although the script's output was pointed at it (`/proc/<pid>/fd/1 -> /root/bench.log`). The cause was not found; the results file was complete. Track progress from the results file instead: `wc -l results/llama8b-4090.jsonl` (13 lines = done), or the gateway's `rejected.overloaded` counter in `/health`.
 
 Expect **15–20 minutes**, nearly all of it the bare server at 64 users (the last user waits behind 63 answers). The gateway runs take seconds each.
 
@@ -186,7 +192,8 @@ Copy both outputs into chat (they contain no secrets). They go into `week03-gate
 | `401` / `403` downloading the model | Token missing, wrong, or not approved. `echo ${HF_TOKEN:+set}` should print `set` (it never prints the token). Or switch to `Qwen/Qwen2.5-7B-Instruct` |
 | `No space left on device` | Container disk too small. Terminate and redeploy with 60 GB+ |
 | `CUDA out of memory` | Card under ~24 GB, or a second model server is running: `pgrep -fa uvicorn` |
-| `address already in use` | A server from an earlier attempt is still running: `pkill -f uvicorn`, then start again |
+| `address already in use` | Check who holds the port: `ss -ltnp \| grep <port>`. **`nginx` on 8001 is the template's own**: use 8002 (as above). A leftover `uvicorn` from an earlier attempt: `pkill -f uvicorn`, then start again |
+| Web terminal window closed | Nothing is lost: the pod and everything started with `nohup` keep running (and billing). Reconnect, then `source $HOME/.local/bin/env` |
 | The script stopped when the terminal closed | It was started without `nohup`. Restart it with the `nohup` line; the results file keeps earlier lines |
 | Load test times out | The bare c=64 run is the slowest. The script already allows 900 s per run. Lower `C_LIST` to `"1 4 16"` if time or money is short |
 | Worried about the bill | Terminate first, ask questions after |

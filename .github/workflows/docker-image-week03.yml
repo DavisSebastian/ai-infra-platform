@@ -1,0 +1,107 @@
+name: Docker image (week03 gateway)
+
+# Second image, second trigger. The paths filter means a gateway change doesn't rebuild the 9 GB model image,
+# and a model-server change doesn't rebuild this one (pyproject.toml / uv.lock / .dockerignore affect both).
+#   pull request -> build, then start the whole compose stack and smoke-test it. Nothing is published.
+#   push to main -> also publish the image to GHCR.
+on:
+  push:
+    branches: [main]
+    paths:
+      - week03-gateway/**
+      - pyproject.toml
+      - uv.lock
+      - .dockerignore
+      - .github/workflows/docker-image-week03.yml
+  pull_request:
+    branches: [main]
+    # Same list as above.
+    paths:
+      - week03-gateway/**
+      - pyproject.toml
+      - uv.lock
+      - .dockerignore
+      - .github/workflows/docker-image-week03.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # only this job may publish; the smoke test below can't
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Work out the image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/week03-gateway" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: week03-gateway/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          # Small image, so the GitHub Actions cache (10 GB cap) is enough; no registry cache needed.
+          cache-from: type=gha,scope=week03-gateway
+          cache-to: type=gha,scope=week03-gateway,mode=max
+
+  compose-smoke:
+    # Unit tests prove the pieces; this proves the containers are wired together correctly:
+    # service names resolve, healthchecks pass, env vars reach the app, and a request flows end to end.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: week03-gateway
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # --wait blocks until every service's healthcheck passes (or fails the step if one never does).
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+
+      - name: Health reports Redis ok
+        run: curl -fsS localhost:8080/health | tee /dev/stderr | grep -q '"redis":"ok"'
+
+      - name: A streaming request flows through to the fake model server
+        run: |
+          curl -fsSN localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+            -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}' | tee out.txt
+          grep -q 'data: \[DONE\]' out.txt
+
+      - name: Rate limit returns 429 after the burst
+        run: |
+          codes=$(for _ in $(seq 1 12); do
+            curl -s -o /dev/null -w '%{http_code} ' localhost:8080/v1/chat/completions -H 'X-API-Key: smoke' \
+              -H 'content-type: application/json' -d '{"messages":[],"stream":false,"max_tokens":1}'
+          done)
+          echo "$codes"
+          echo "$codes" | grep -q 429
+
+      - name: Show logs if anything failed
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down

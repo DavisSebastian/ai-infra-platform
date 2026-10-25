@@ -1,18 +1,57 @@
-# Step 3: just Redis. The gateway and the fake upstream join this file in step 8, once they have a Dockerfile.
+# The whole Week 3 stack: gateway -> fake model server, with Redis for rate limiting.
 #
-#   docker compose up -d      start in the background
-#   docker compose ps         STATUS should read "healthy"
-#   docker compose down       stop and remove
+#   docker compose up -d --build --wait   build, start, and wait until every service is healthy
+#   docker compose ps                     every STATUS should read "healthy"
+#   curl -N localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+#        -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}'
+#   docker compose down
+#
+# Only `redis` (for tests running on the Mac) and `gateway` publish ports. The fake model server is reachable
+# only inside the compose network, as http://fake:9000, which is how the gateway finds it.
 
 services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379" # Mac port : container port. Lets code on the Mac reach Redis at localhost:6379
+      - "6379:6379" # Mac port : container port. Lets pytest on the Mac reach Redis at localhost:6379
     healthcheck:
       # Docker runs this inside the container. Exit code 0 means healthy.
-      # `depends_on: condition: service_healthy` (added in step 8) waits for this, not just for "started".
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 2s
       retries: 5
+
+  fake:
+    # Same image as the gateway, different command: one build, two services.
+    build:
+      context: .. # the repo root, because the Dockerfile needs the root pyproject.toml and uv.lock
+      dockerfile: week03-gateway/Dockerfile
+    image: week03-gateway:dev
+    command: ["uvicorn", "app.fake_upstream:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      FAKE_CHUNKS: "20"
+      FAKE_CHUNK_DELAY: "0.02"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    image: week03-gateway:dev
+    ports:
+      - "8080:8080"
+    environment:
+      # Service names, not localhost: inside a container, localhost is the container itself.
+      REDIS_URL: redis://redis:6379
+      UPSTREAM_URL: http://fake:9000
+      MAX_IN_FLIGHT: "1"
+      MAX_QUEUE: "2"
+      RATE_LIMIT_CAPACITY: "10"
+      RATE_LIMIT_REFILL_PER_SEC: "1"
+    depends_on:
+      # Wait until these are HEALTHY (their healthchecks pass), not merely started.
+      redis:
+        condition: service_healthy
+      fake:
+        condition: service_healthy

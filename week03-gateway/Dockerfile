@@ -5,6 +5,8 @@
 #
 # Same two-stage pattern as week02-thin-slice/Dockerfile (build the virtualenv with uv, ship only the venv).
 # The difference is what goes in: the `week03-serve` group has no torch and no model, so this image is small.
+# Since Week 4 it also contains promptclean, a C++ extension: the BUILDER stage compiles it, and only the compiled
+# result reaches the runtime stage. The compiler (~200 MB) never ships. That is the point of the two stages.
 # The fake model server lives in the same app/ package, so this one image can run either:
 #   gateway (default CMD)   or   uvicorn app.fake_upstream:app --host 0.0.0.0 --port 9000
 
@@ -13,14 +15,25 @@ FROM python:3.12-slim-bookworm AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /usr/local/bin/uv
 
+# A C++ compiler (g++), make and CMake, to compile promptclean. Builder stage only.
+# CMake comes from Debian rather than PyPI: scikit-build-core uses a system CMake that is new enough (we need
+# >= 3.15, Debian has 3.25), so builds don't download a 30 MB CMake wheel every time. A first build that
+# downloaded it timed out, which is how this was found.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
-# Dependency files first, so code edits don't re-run the install (Docker layer caching).
+# Dependency files first, so gateway code edits don't re-run the install (Docker layer caching).
+# promptclean is a dependency installed from a local path, so its source has to be here before `uv sync`.
+# (Changing the C++ re-runs the install layer, which is right: the extension has to be recompiled.)
 COPY pyproject.toml uv.lock ./
+COPY week04-cpp-cleaner ./week04-cpp-cleaner
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --group week03-serve

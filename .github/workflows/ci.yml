@@ -91,3 +91,34 @@ jobs:
       # point pytest at Week 3's folder and import path explicitly.
       - name: Run Week 3 tests
         run: uv run pytest -v -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests
+
+  test-week04:
+    # First build matrix: the same job on Linux (gcc, x86_64) and macOS (clang, arm64). Native code is compiled per
+    # platform, so "it builds on my Mac" says nothing about Linux (what the Docker image runs), and vice versa.
+    strategy:
+      fail-fast: false # show both results even if one platform fails
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # Installing the week04 group compiles promptclean's C++ (scikit-build-core runs CMake + the compiler).
+      - name: Build promptclean and install dependencies
+        run: uv sync --locked --group dev --group week04
+
+      - name: Show the compiled module (platform-specific filename)
+        run: uv run python -c "import promptclean._native as n; print(n.__file__)"
+
+      - name: Run Week 4 tests
+        run: uv run pytest -v week04-cpp-cleaner/tests

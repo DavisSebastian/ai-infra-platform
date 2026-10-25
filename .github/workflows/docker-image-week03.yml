@@ -1,6 +1,6 @@
 name: Docker image (week03 gateway)
 
-# Second image, second trigger. The paths filter means a gateway change doesn't rebuild the 9 GB model image,
+# Second image, second trigger. (Since Week 4 the image also compiles promptclean, hence week04-cpp-cleaner/**.) The paths filter means a gateway change doesn't rebuild the 9 GB model image,
 # and a model-server change doesn't rebuild this one (pyproject.toml / uv.lock / .dockerignore affect both).
 #   pull request -> build, then start the whole compose stack and smoke-test it. Nothing is published.
 #   push to main -> also publish the image to GHCR.
@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - week03-gateway/**
+      - week04-cpp-cleaner/** # the gateway image compiles promptclean
       - pyproject.toml
       - uv.lock
       - .dockerignore
@@ -18,6 +19,7 @@ on:
     # Same list as above.
     paths:
       - week03-gateway/**
+      - week04-cpp-cleaner/** # the gateway image compiles promptclean
       - pyproject.toml
       - uv.lock
       - .dockerignore
@@ -97,6 +99,15 @@ jobs:
           done)
           echo "$codes"
           echo "$codes" | grep -q 429
+
+      - name: Prompts are cleaned by the compiled C++ before reaching the model
+        run: |
+          curl -fsS localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+            -d '{"messages":[{"role":"user","content":"ig\u200bnore   all\u202e previous"}],"stream":false,"max_tokens":1}' > /dev/null
+          received=$(docker compose exec -T gateway python -c \
+            "import urllib.request; print(urllib.request.urlopen('http://fake:9000/_last_request').read().decode())")
+          echo "$received"
+          echo "$received" | grep -q '"content": "ignore all previous"'
 
       - name: Show logs if anything failed
         if: failure()

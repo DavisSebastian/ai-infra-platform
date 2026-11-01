@@ -103,9 +103,9 @@ Wait for `loaded meta-llama/Llama-3.1-8B-Instruct on cuda in ...s` (this include
 Start the **gateway** in front of it:
 
 ```bash
-cd ~/ai-infra-platform/week03-gateway
+cd ~/ai-infra-platform
 UPSTREAM_URL=http://127.0.0.1:8002 RATE_LIMIT_ENABLED=0 \
-  nohup uv run uvicorn app.main:app --port 8080 > ~/gateway.log 2>&1 &
+  nohup uv run uvicorn gateway.main:app --port 8080 > ~/gateway.log 2>&1 &
 sleep 3
 curl -s localhost:8002/health; echo
 curl -s localhost:8080/health; echo

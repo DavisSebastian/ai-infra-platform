@@ -1,0 +1,28 @@
+# The gateway as its own installable package (built in Week 3, extended every week of Month 2).
+# Like promptclean, it is not the repo's root project: the root pyproject.toml installs it through a dependency
+# group, so any week can `import gateway` without pytest pythonpath tricks.
+[build-system]
+# Pinned exactly, for the same reason as promptclean's build tools: uv.lock pins runtime dependencies, not these.
+# uv_build is uv's own backend; at the same version as uv itself, uv builds the package without downloading it.
+requires = ["uv_build==0.12.17"]
+build-backend = "uv_build"
+
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "Async inference gateway: streaming proxy, rate limiting, backpressure, prompt cleaning"
+requires-python = ">=3.12"
+# What the gateway needs at run time. aiohttp and httpx are both here on purpose: Week 3 measured which one
+# makes the better streaming proxy (the choice is the PROXY_CLIENT env var).
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "anyio>=4",
+    "aiohttp>=3.10",
+    "httpx>=0.27",
+    "redis>=5",  # redis.asyncio: the async client, with a connection pool built in
+    "promptclean",  # Week 4: the C++ prompt cleaner (compiled on install; see week04-cpp-cleaner/)
+]
+
+[tool.uv.sources]
+promptclean = { path = "../week04-cpp-cleaner" }

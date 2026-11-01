@@ -52,7 +52,7 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
-  test-week03:
+  test-gateway:
     runs-on: ubuntu-latest
 
     # A service container: GitHub starts Redis next to the job, like the compose file does locally.
@@ -84,13 +84,13 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      # Installs the gateway package (gateway/) and its dependencies, compiling promptclean on the way.
       - name: Install dependencies
         run: uv sync --locked --group dev --group week03-serve
 
-      # Weeks 2 and 3 each have a package named `app`, so they can't share one pytest run:
-      # point pytest at Week 3's folder and import path explicitly.
-      - name: Run Week 3 tests
-        run: uv run pytest -v -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests
+      # The gateway is an installed package now, so `import gateway` works from anywhere: no pythonpath override.
+      - name: Run gateway tests
+        run: uv run pytest -v gateway/tests
 
   test-week04:
     # First build matrix: the same job on Linux (gcc, x86_64) and macOS (clang, arm64). Native code is compiled per

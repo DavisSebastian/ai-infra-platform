@@ -7,7 +7,7 @@ tests, so rate limiting fails open and only admission control decides.
 import asyncio
 import time
 
-import app.main as gateway
+import gateway.main as gateway
 import httpx
 import pytest
 from conftest import closed_port_url
@@ -146,7 +146,7 @@ async def test_dead_upstream_gives_502_and_frees_the_slot(settings, start_gatewa
 async def test_a_crashing_disconnect_watcher_is_not_mistaken_for_a_departed_client():
     """Found while mutation testing: a watcher that raised was treated as "client gone", silently dropping a live
     request. It must surface as an error instead."""
-    from app.admission import Admission
+    from gateway.admission import Admission
 
     adm = Admission(max_in_flight=1, max_queue=2, queue_timeout=1.0)
 

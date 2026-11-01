@@ -2,7 +2,7 @@
 
 import json
 
-import app.main as gateway
+import gateway.main as gateway
 import httpx
 import pytest
 

@@ -7,7 +7,7 @@ separate Redis commands, with an `await` (a gap where other requests run) betwee
 import time
 
 import redis.asyncio as redis
-from app.limiter import Bucket, take
+from gateway.limiter import Bucket, take
 
 
 class NaiveRedisTokenBucket:

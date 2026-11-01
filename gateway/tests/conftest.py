@@ -3,8 +3,8 @@ import socket
 import threading
 import time
 
-import app.fake_upstream as fake_upstream
-import app.main as gateway
+import gateway.fake_upstream as fake_upstream
+import gateway.main as gateway
 import pytest
 import uvicorn
 
@@ -63,7 +63,7 @@ def real_redis_url():
     except OSError:
         if os.getenv("REQUIRE_REDIS"):
             pytest.fail("REQUIRE_REDIS is set but Redis is not reachable at " + REAL_REDIS)
-        pytest.skip("Redis is not running: `docker compose up -d` in week03-gateway/")
+        pytest.skip("Redis is not running: `docker compose up -d redis` in gateway/")
     return REAL_REDIS
 
 

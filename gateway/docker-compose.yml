@@ -1,4 +1,4 @@
-# The whole Week 3 stack: gateway -> fake model server, with Redis for rate limiting.
+# The gateway's dev stack (built in Week 3): gateway -> fake model server, with Redis for rate limiting.
 #
 #   docker compose up -d --build --wait   build, start, and wait until every service is healthy
 #   docker compose ps                     every STATUS should read "healthy"
@@ -25,9 +25,9 @@ services:
     # Same image as the gateway, different command: one build, two services.
     build:
       context: .. # the repo root, because the Dockerfile needs the root pyproject.toml and uv.lock
-      dockerfile: week03-gateway/Dockerfile
-    image: week03-gateway:dev
-    command: ["uvicorn", "app.fake_upstream:app", "--host", "0.0.0.0", "--port", "9000"]
+      dockerfile: gateway/Dockerfile
+    image: gateway:dev
+    command: ["uvicorn", "gateway.fake_upstream:app", "--host", "0.0.0.0", "--port", "9000"]
     environment:
       FAKE_CHUNKS: "20"
       FAKE_CHUNK_DELAY: "0.02"
@@ -38,7 +38,7 @@ services:
       retries: 10
 
   gateway:
-    image: week03-gateway:dev
+    image: gateway:dev
     ports:
       - "8080:8080"
     environment:

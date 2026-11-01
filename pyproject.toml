@@ -34,15 +34,8 @@ week02 = [
 ]
 
 week03-serve = [
-    # Everything the Week 3 gateway needs. aiohttp and httpx are both here on purpose: step 1 measures which
-    # one makes the better streaming proxy (the choice is the PROXY_CLIENT env var).
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "anyio>=4",
-    "aiohttp>=3.10",
-    "httpx>=0.27",
-    "redis>=5",  # redis.asyncio: the async client, with a connection pool built in
-    "promptclean",  # week 4: the C++ prompt cleaner (compiled on install; see week04-cpp-cleaner/)
+    # The Week 3 gateway, now its own package in gateway/ (its runtime dependencies live in gateway/pyproject.toml).
+    "gateway",
 ]
 week03 = [
     {include-group = "week03-serve"},
@@ -56,6 +49,7 @@ week04 = [
 
 [tool.uv.sources]
 promptclean = { path = "week04-cpp-cleaner" }
+gateway = { path = "gateway", editable = true }  # editable: code edits apply without reinstalling
 
 [tool.ruff]
 line-length = 120

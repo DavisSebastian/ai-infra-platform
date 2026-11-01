@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 #
 # The gateway image. Build from the REPO ROOT (the root pyproject.toml and uv.lock are needed):
-#   docker build -f week03-gateway/Dockerfile -t week03-gateway:dev .
+#   docker build -f gateway/Dockerfile -t gateway:dev .
 #
 # Same two-stage pattern as week02-thin-slice/Dockerfile (build the virtualenv with uv, ship only the venv).
 # The difference is what goes in: the `week03-serve` group has no torch and no model, so this image is small.
 # Since Week 4 it also contains promptclean, a C++ extension: the BUILDER stage compiles it, and only the compiled
 # result reaches the runtime stage. The compiler (~200 MB) never ships. That is the point of the two stages.
-# The fake model server lives in the same app/ package, so this one image can run either:
-#   gateway (default CMD)   or   uvicorn app.fake_upstream:app --host 0.0.0.0 --port 9000
+# The fake model server lives in the same `gateway` package, so this one image can run either:
+#   gateway (default CMD)   or   uvicorn gateway.fake_upstream:app --host 0.0.0.0 --port 9000
 
 # ---------- Stage 1: build the virtualenv ----------
 FROM python:3.12-slim-bookworm AS builder
@@ -34,9 +34,18 @@ WORKDIR /app
 # (Changing the C++ re-runs the install layer, which is right: the extension has to be recompiled.)
 COPY pyproject.toml uv.lock ./
 COPY week04-cpp-cleaner ./week04-cpp-cleaner
+COPY gateway/pyproject.toml ./gateway/pyproject.toml
 
+# Pass 1: every dependency EXCEPT the gateway itself (its code isn't here yet). This is the slow layer.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --group week03-serve
+    uv sync --locked --no-dev --group week03-serve --no-install-package gateway
+
+# Pass 2: now the code, then install just the gateway. A code edit re-runs only this fast layer.
+# --no-editable: copy the package INTO the venv. The editable install used for local dev only points at the source
+# folder, which doesn't exist in the runtime stage.
+COPY gateway/src ./gateway/src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --group week03-serve --no-editable
 
 # ---------- Stage 2: the runtime image ----------
 FROM python:3.12-slim-bookworm AS runtime
@@ -52,7 +61,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
-COPY week03-gateway/app ./app
 
 USER app
 EXPOSE 8080
@@ -62,4 +70,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]

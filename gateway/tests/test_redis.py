@@ -69,7 +69,7 @@ async def test_hung_redis_hits_the_timeout_instead_of_hanging(start_gateway):
 async def test_many_concurrent_pings_share_a_small_pool(start_gateway, real_redis_url, monkeypatch):
     """100 simultaneous /health calls against a pool of 5 connections all succeed: callers queue for a free
     connection (BlockingConnectionPool) instead of erroring."""
-    import app.main as gateway
+    import gateway.main as gateway
 
     monkeypatch.setattr(gateway, "REDIS_MAX_CONNECTIONS", 5)
     url = start_gateway(redis_url=real_redis_url)

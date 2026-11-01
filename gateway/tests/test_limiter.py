@@ -1,7 +1,7 @@
 """Unit tests for the pure token bucket. No Redis, no sleeping: time is just a number we pass in."""
 
 import pytest
-from app.limiter import Bucket, take
+from gateway.limiter import Bucket, take
 
 
 def run(requests_at: list[float], capacity: float, refill_rate: float) -> list[bool]:

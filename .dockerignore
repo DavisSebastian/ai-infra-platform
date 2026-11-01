@@ -5,7 +5,8 @@
 !pyproject.toml
 !uv.lock
 !week02-thin-slice/app
-!week03-gateway/app
+!gateway/pyproject.toml
+!gateway/src
 !week04-cpp-cleaner/pyproject.toml
 !week04-cpp-cleaner/CMakeLists.txt
 !week04-cpp-cleaner/src

@@ -4,6 +4,8 @@ Week 2's model server handles one generation at a time. With 16 users arriving a
 
 This week puts a gateway in front of it. The gateway decides who gets in, bounds how long anyone waits, and turns everyone else away in milliseconds.
 
+> **Where the code lives now:** the gateway grew into its own package, [`gateway/`](../gateway/) (code in `gateway/src/gateway/`, tests, Dockerfile and compose stack next to it), because Month 2 keeps extending it. This folder keeps the Week 3 write-up, runbook, results and load-test scripts.
+
 ```
 Client ──SSE──► [ Gateway :8080 ] ─────────────────────────────► [ Model server ]
                   1. rate limit per client     → 429   (Redis, token bucket, Lua)
@@ -21,7 +23,7 @@ Everything runs on a laptop; no GPU needed.
 **The whole stack in Docker** (gateway, Redis, fake model server):
 
 ```bash
-cd week03-gateway
+cd gateway
 docker compose up -d --build --wait
 curl -N localhost:8080/v1/chat/completions -H 'content-type: application/json' \
   -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}'
@@ -32,18 +34,19 @@ docker compose down
 **In front of the real Week 2 server** (Qwen 0.5B on the Mac):
 
 ```bash
+# all from the repo root
 uv sync --group dev --group week02 --group week03
-cd week02-thin-slice && uv run uvicorn app.main:app --port 8001          # terminal 1
-cd week03-gateway && docker compose up -d redis --wait
-UPSTREAM_URL=http://127.0.0.1:8001 uv run uvicorn app.main:app --port 8080  # terminal 2
-uv run python scripts/loadtest.py /v1/chat/completions --prompt "Write a long story about a robot." \
+(cd week02-thin-slice && uv run uvicorn app.main:app --port 8001)                # terminal 1
+(cd gateway && docker compose up -d redis --wait)
+UPSTREAM_URL=http://127.0.0.1:8001 uv run uvicorn gateway.main:app --port 8080  # terminal 2
+uv run python week03-gateway/scripts/loadtest.py /v1/chat/completions --prompt "Write a long story about a robot." \
   --max-tokens 100 -n 16 -c 16
 ```
 
 **Tests** (Redis must be running: `docker compose up -d redis`):
 
 ```bash
-uv run pytest -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests
+uv run pytest gateway/tests
 ```
 
 ### Settings (all environment variables)
@@ -145,11 +148,11 @@ POST /v1/chat/completions
   ├─ 1. rate limit: Lua token bucket in Redis, keyed by hashed API key (else IP)
   │        over budget → 429 + Retry-After          Redis down or slow → let it through, count it
   │
-  ├─ clean the prompt (app/sanitize.py → Week 4's C++ promptclean): invisible/control characters, whitespace,
+  ├─ clean the prompt (gateway/sanitize.py → Week 4's C++ promptclean): invisible/control characters, whitespace,
   │        optional cap. Small prompts inline, big ones on a worker thread (the C++ releases the GIL).
   │        Not JSON / no messages list → forwarded unchanged.   /health counts what was removed.
   │
-  ├─ 2. admission (app/admission.py)
+  ├─ 2. admission (gateway/admission.py)
   │        slot free, nobody waiting → go
   │        queue full → 503 overloaded (immediately)
   │        else wait, racing three things:
@@ -184,9 +187,9 @@ CI (`.github/workflows/`):
 
 | Job | What it proves |
 |---|---|
-| `ci.yml` → `test-week03` | The tests, with Redis as a **service container**. `REQUIRE_REDIS=1` turns "Redis missing" into a failure instead of a skip |
-| `docker-image-week03.yml` → `build` | The image builds; on `main` it is published to GHCR. A `paths` filter keeps it separate from the 9 GB model image |
-| `docker-image-week03.yml` → `compose-smoke` | The containers are wired correctly: `docker compose up --wait`, then health, a streamed answer, and a 429 |
+| `ci.yml` → `test-gateway` | The tests, with Redis as a **service container**. `REQUIRE_REDIS=1` turns "Redis missing" into a failure instead of a skip |
+| `docker-image-gateway.yml` → `build` | The image builds; on `main` it is published to GHCR. A `paths` filter keeps it separate from the 9 GB model image |
+| `docker-image-gateway.yml` → `compose-smoke` | The containers are wired correctly: `docker compose up --wait`, then health, a streamed answer, and a 429 |
 
 ## Docker
 
@@ -195,7 +198,7 @@ CI (`.github/workflows/`):
 | Image size | 9.34 GB | **293 MB** |
 | Dependencies | torch, transformers, CUDA wheels | FastAPI, aiohttp, redis |
 
-The gateway image also runs the fake model server (`uvicorn app.fake_upstream:app`), so compose builds once and uses it twice. Only the gateway publishes a port; the fake is reachable only inside the compose network, as `http://fake:9000`.
+The gateway image also runs the fake model server (`uvicorn gateway.fake_upstream:app`), so compose builds once and uses it twice. Only the gateway publishes a port; the fake is reachable only inside the compose network, as `http://fake:9000`.
 
 ## Known gaps
 
@@ -203,7 +206,6 @@ The gateway image also runs the fake model server (`uvicorn app.fake_upstream:ap
 - A **hung** (not down) Redis adds up to the 0.5 s socket timeout to every request before failing open. Tested for `/health`, not measured on the proxy path. A circuit breaker would fix it.
 - `Retry-After` on a 503 is a fixed 5 s, not derived from measured answer times.
 - The "generator never started" release path is not reproduced by a test; the guard exists because Starlette's code shows the gap.
-- Weeks 2 and 3 both have a package named `app`, so Week 3's tests need the `-o pythonpath=... -o testpaths=...` overrides.
 - The API key only selects a rate-limit bucket; nothing validates it.
 
 ## Lessons learned

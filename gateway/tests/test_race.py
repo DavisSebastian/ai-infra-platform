@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 import redis.asyncio as redis
-from app.redis_limiter import RedisTokenBucket
+from gateway.redis_limiter import RedisTokenBucket
 from naive_limiter import NaiveRedisTokenBucket
 
 CAPACITY = 10

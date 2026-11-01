@@ -5,7 +5,7 @@ Because the timing is known exactly (CHUNKS chunks, CHUNK_DELAY seconds apart), 
 through the gateway is the gateway's own overhead. It also counts how many streams ended early, so a test
 can prove "the client left -> the upstream stopped".
 
-Run:  uv run uvicorn app.fake_upstream:app --port 9000   (from week03-gateway/)
+Run:  uv run uvicorn gateway.fake_upstream:app --port 9000
 """
 
 import asyncio

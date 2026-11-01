@@ -3,7 +3,7 @@
 POST /v1/chat/completions   rate limit (429) -> clean prompt (C++) -> admission (503) -> forwarded, chunks relayed live
 GET  /health
 
-Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn app.main:app --port 8080   (from week03-gateway/)
+Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn gateway.main:app --port 8080
 """
 
 import hashlib
@@ -20,10 +20,10 @@ import redis.asyncio as redis
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
-from app.admission import Admission, ClientGone, Rejected
-from app.redis_limiter import RedisTokenBucket
-from app.sanitize import clean_body
-from app.upstream import UpstreamClient, make_client
+from gateway.admission import Admission, ClientGone, Rejected
+from gateway.redis_limiter import RedisTokenBucket
+from gateway.sanitize import clean_body
+from gateway.upstream import UpstreamClient, make_client
 
 log = logging.getLogger("uvicorn.error")
 

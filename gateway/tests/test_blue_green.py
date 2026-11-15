@@ -10,6 +10,8 @@ import gateway.main as gateway
 import httpx
 import pytest
 from conftest import serve, stop
+from fake_registry import CARD_V1, CARD_V2, FakeRegistry
+from gateway.champion import ChampionError
 
 TOKEN = "test-admin-token"
 CHAT = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}
@@ -159,5 +161,80 @@ async def test_a_bad_traffic_setting_stops_startup(monkeypatch, traffic_green, g
     monkeypatch.setattr(gateway, "TRAFFIC_GREEN", traffic_green)
     monkeypatch.setattr(gateway, "GREEN_URL", green_url)
     with pytest.raises(ValueError, match=complaint):
+        async with gateway.lifespan(gateway.app):
+            pass
+
+
+# --- Each side serves its own card from the registry ------------------------------------------------------
+# blue follows the `blue` alias, green the `green` alias; `champion` is only the record of what was released.
+
+V1_MODEL, V2_MODEL = "Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+@pytest.fixture
+def registry():
+    return FakeRegistry({"1": CARD_V1, "2": CARD_V2}, aliases={"champion": "1", "blue": "1", "green": "2"})
+
+
+@pytest.fixture
+def blue_green_registry(blue_green_settings, start_gateway, servers):
+    return start_gateway(upstream_url=servers["blue"])
+
+
+@pytest.fixture
+def blue_green_settings(servers, registry, monkeypatch):
+    monkeypatch.setattr(gateway, "GREEN_URL", servers["green"])
+    monkeypatch.setattr(gateway, "ADMIN_TOKEN", TOKEN)
+    monkeypatch.setattr(gateway, "MLFLOW_TRACKING_URI", "http://fake-registry")
+    monkeypatch.setattr(gateway, "make_registry_client", lambda: registry)
+
+
+async def model_sent_to(server_url: str) -> str:
+    """The `model` the gateway forwarded to this server: which card it applied."""
+    async with httpx.AsyncClient() as c:
+        return (await c.get(f"{server_url}/_last_request")).json()["model"]
+
+
+async def reload(url: str) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=10) as c:
+        return await c.post(f"{url}/admin/reload", headers={"x-admin-token": TOKEN})
+
+
+async def test_each_side_gets_its_own_card(blue_green_registry, servers):
+    await served_by(blue_green_registry)
+    assert await model_sent_to(servers["blue"]) == V1_MODEL
+
+    await set_green(blue_green_registry, {"green": 100})
+    await served_by(blue_green_registry)
+    assert await model_sent_to(servers["green"]) == V2_MODEL
+
+
+async def test_health_shows_each_sides_version(blue_green_registry):
+    async with httpx.AsyncClient() as c:
+        health = (await c.get(f"{blue_green_registry}/health")).json()
+    assert {s: v["version"] for s, v in health["registry"]["sides"].items()} == {"blue": "1", "green": "2"}
+    assert {s: v["card"] for s, v in health["traffic"].items()} == {"blue": "1", "green": "2"}
+
+
+async def test_deploy_then_reload_changes_only_that_side(blue_green_registry, registry):
+    registry.aliases["green"] = "1"  # someone ran `release.py deploy 1 --to green`
+    r = await reload(blue_green_registry)
+    sides = {"blue": {"version": "1", "previous": "1"}, "green": {"version": "1", "previous": "2"}}
+    assert r.json() == {"sides": sides, "changed": True}
+
+
+async def test_a_failed_reload_keeps_every_side_as_it_was(blue_green_registry, registry, servers):
+    registry.aliases["green"] = "1"
+    del registry.aliases["blue"]  # green's new card is fine, blue's is missing: all or nothing
+    r = await reload(blue_green_registry)
+    assert r.status_code == 503 and "Still serving blue v1, green v2" in r.json()["error"]["message"]
+    await set_green(blue_green_registry, {"green": 100})
+    await served_by(blue_green_registry)
+    assert await model_sent_to(servers["green"]) == V2_MODEL  # green did NOT switch to v1 on its own
+
+
+async def test_a_missing_side_alias_stops_startup(blue_green_settings, registry):
+    del registry.aliases["green"]
+    with pytest.raises(ChampionError, match="green"):
         async with gateway.lifespan(gateway.app):
             pass

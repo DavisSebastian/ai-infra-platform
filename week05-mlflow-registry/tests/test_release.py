@@ -3,7 +3,7 @@
 import pytest
 from mlflow.exceptions import MlflowException
 from mlflow.protos.databricks_pb2 import INTERNAL_ERROR
-from release import ReleaseError, promote, rollback
+from release import ReleaseError, deploy, promote, rollback
 
 
 def test_first_promotion_sets_champion_and_no_fallback(registry):
@@ -82,3 +82,29 @@ def test_rollback_interrupted_halfway_never_leaves_the_bad_version_live(registry
     assert registry.aliases["champion"] in {"1", "2"}
     if crash_in == "delete_registered_model_alias":
         assert registry.aliases == {"champion": "1", "fallback": "1"}  # the good version is already live
+
+
+# --- Week 6: deploy to a Blue/Green side ----------------------------------------------------------------
+
+
+def test_deploy_points_the_side_at_the_version_and_leaves_champion_alone(registry):
+    promote(registry, "1", by="davis")
+    deploy(registry, "2", "green", by="davis")
+    assert registry.aliases == {"champion": "1", "green": "2"}
+    assert registry.tags["2"]["deployed_by"] == "davis" and "deployed_to_green_at" in registry.tags["2"]
+
+
+def test_deploy_has_the_same_gate_as_promote(registry):
+    with pytest.raises(ReleaseError, match="eval=failed"):
+        deploy(registry, "3", "green", by="davis")
+    assert registry.aliases == {}
+
+
+def test_deploy_to_an_unknown_side_is_refused(registry):
+    with pytest.raises(ReleaseError, match="purple"):
+        deploy(registry, "2", "purple", by="davis")
+
+
+def test_deploying_the_same_version_again_changes_nothing(registry):
+    deploy(registry, "2", "green", by="davis")
+    assert "already on green" in deploy(registry, "2", "green", by="davis")

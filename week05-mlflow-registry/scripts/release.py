@@ -4,10 +4,16 @@
     uv run --group week05 python scripts/release.py status
     uv run --group week05 python scripts/release.py promote 2
     uv run --group week05 python scripts/release.py rollback --reason "answers got worse"
+    uv run --group week05 python scripts/release.py deploy 2 --to green      # Week 6
 
 Two aliases on `gateway-llm`:
-  champion   the version the gateway serves
+  champion   the version the gateway serves (with Blue/Green on: the version officially released)
   fallback   the last good champion, kept ready so rollback is one pointer move
+
+Week 6, Blue/Green: two more aliases, `blue` and `green`, say which version each model server runs. A release:
+  deploy 2 --to green   green runs v2 (same gate as promote), then POST /admin/reload on the gateway
+  POST /admin/traffic   move traffic to green step by step: 10, 50, 100. Rollback = {"green": 0}
+  promote 2             once green has all the traffic: record v2 as champion
 
 Rules:
   promote N   N must be tagged eval=passed. The old champion becomes fallback.
@@ -31,6 +37,7 @@ from mlflow.exceptions import MlflowException
 MODEL_NAME = os.getenv("REGISTRY_MODEL", "gateway-llm")  # same variable the gateway reads
 CHAMPION = "champion"
 FALLBACK = "fallback"
+SIDES = ("blue", "green")  # Week 6: one alias per model server
 TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
 
 
@@ -47,8 +54,8 @@ def current(client, name: str = MODEL_NAME) -> dict[str, str]:
     return dict(client.get_registered_model(name).aliases)
 
 
-def promote(client, version: str, name: str = MODEL_NAME, by: str | None = None) -> str:
-    """Make `version` the champion. Returns a one-line summary of what happened."""
+def check_passed(client, version: str, name: str, action: str) -> None:
+    """The gate: only versions that passed their eval can go anywhere near traffic."""
     try:
         mv = client.get_model_version(name, version)
     except MlflowException as e:
@@ -57,7 +64,12 @@ def promote(client, version: str, name: str = MODEL_NAME, by: str | None = None)
         raise ReleaseError(f"{name} has no v{version}") from None
     verdict = mv.tags.get("eval")
     if verdict != "passed":
-        raise ReleaseError(f"v{version} has eval={verdict or '(none)'}; only eval=passed versions can be promoted")
+        raise ReleaseError(f"v{version} has eval={verdict or '(none)'}; only eval=passed versions can be {action}")
+
+
+def promote(client, version: str, name: str = MODEL_NAME, by: str | None = None) -> str:
+    """Make `version` the champion. Returns a one-line summary of what happened."""
+    check_passed(client, version, name, "promoted")
 
     aliases = current(client, name)
     old = aliases.get(CHAMPION)
@@ -95,6 +107,25 @@ def rollback(client, name: str = MODEL_NAME, reason: str = "manual") -> str:
     return f"{CHAMPION}: v{bad or '-'} -> v{good}, {FALLBACK}: cleared (reason: {reason})"
 
 
+def deploy(client, version: str, side: str, name: str = MODEL_NAME, by: str | None = None) -> str:
+    """Week 6: point a model server's alias (`blue` or `green`) at `version`. Returns a one-line summary.
+
+    Only the alias moves. The gateway picks it up on POST /admin/reload, and only gets traffic through
+    POST /admin/traffic, so deploying to the side that has no traffic is safe at any time.
+    """
+    if side not in SIDES:
+        raise ReleaseError(f"no side called {side!r}; use one of {', '.join(SIDES)}")
+    check_passed(client, version, name, "deployed")
+
+    old = current(client, name).get(side)
+    if old == version:
+        return f"v{version} is already on {side}; nothing changed"
+    client.set_registered_model_alias(name, side, version)
+    client.set_model_version_tag(name, version, f"deployed_to_{side}_at", now())
+    client.set_model_version_tag(name, version, "deployed_by", by or getpass.getuser())
+    return f"{side}: v{old or '-'} -> v{version} (now POST /admin/reload on the gateway)"
+
+
 def status(client, name: str = MODEL_NAME) -> str:
     aliases = current(client, name)
     lines = []
@@ -115,6 +146,9 @@ def main() -> None:
     p.add_argument("version", help="version number, e.g. 2")
     r = sub.add_parser("rollback", help="switch champion back to fallback")
     r.add_argument("--reason", default="manual", help="why, stored as a tag on the version rolled back from")
+    d = sub.add_parser("deploy", help="Week 6: point the blue or green model server at a version")
+    d.add_argument("version", help="version number, e.g. 2")
+    d.add_argument("--to", required=True, choices=SIDES, help="which model server")
     args = parser.parse_args()
 
     client = MlflowClient(TRACKING_URI)
@@ -123,6 +157,8 @@ def main() -> None:
             print(promote(client, args.version))
         elif args.command == "rollback":
             print(rollback(client, reason=args.reason))
+        elif args.command == "deploy":
+            print(deploy(client, args.version, args.to))
         print(status(client))
     except ReleaseError as e:
         raise SystemExit(f"refused: {e}") from None

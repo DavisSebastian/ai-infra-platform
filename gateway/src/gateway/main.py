@@ -28,7 +28,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
 from gateway.admission import Admission, ClientGone, Rejected
-from gateway.champion import ChampionError, ServingCard, apply_card, resolve_champion
+from gateway.champion import CHAMPION, ChampionError, ServingCard, apply_card, resolve_champion
 from gateway.redis_limiter import RedisTokenBucket
 from gateway.router import BLUE, GREEN, TrafficSplit, choose, split_from_env
 from gateway.sanitize import clean_body
@@ -88,12 +88,34 @@ class Side:
     url: str
     upstream: UpstreamClient
     admission: Admission
+    card: ServingCard | None = None  # the settings this server's requests get (None = registry off)
     routed: int = 0  # requests choose() sent to this side
 
     @classmethod
-    def create(cls, name: str, url: str) -> "Side":
+    def create(cls, name: str, url: str, card: ServingCard | None) -> "Side":
         upstream = make_client(PROXY_CLIENT, url, UPSTREAM_MAX_CONNECTIONS, UPSTREAM_CONNECT_TIMEOUT)
-        return cls(name, url, upstream, Admission(MAX_IN_FLIGHT, MAX_QUEUE, QUEUE_TIMEOUT))
+        return cls(name, url, upstream, Admission(MAX_IN_FLIGHT, MAX_QUEUE, QUEUE_TIMEOUT), card)
+
+
+def card_aliases() -> dict[str, str]:
+    """Which registry alias each side's card comes from.
+
+    One model server: blue serves `champion`, exactly as in Week 5. Blue/Green: each server follows its own alias
+    (`blue`, `green`), moved by `release.py deploy N --to green`, and `champion` records what is officially released.
+    """
+    return {BLUE: BLUE, GREEN: GREEN} if GREEN_URL else {BLUE: CHAMPION}
+
+
+def resolve_cards(client, aliases: dict[str, str]) -> dict[str, ServingCard]:
+    """Every side's card, or ChampionError if any one fails: all or nothing, never half the sides updated."""
+    return {side: resolve_champion(client, REGISTRY_MODEL, alias=alias) for side, alias in aliases.items()}
+
+
+def describe(cards: dict[str, ServingCard]) -> str:
+    """'v2' with one model server, 'blue v1, green v2' with two."""
+    if len(cards) == 1:
+        return f"v{next(iter(cards.values())).version}"
+    return ", ".join(f"{side} v{card.version}" for side, card in cards.items())
 
 
 def make_registry_client():
@@ -108,26 +130,27 @@ def make_registry_client():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The champion card comes FIRST, before any connection is opened. With the registry on and no usable card there
-    # is nothing correct to serve, so startup fails (fail fast: the container restarts and tries again).
-    app.state.registry = None
-    app.state.card = None
-    app.state.reload = {"ok": 0, "failed": 0, "last_error": None}
-    if MLFLOW_TRACKING_URI:
-        app.state.registry = make_registry_client()
-        # The MLflow client is blocking (requests), so it runs on a worker thread: never block the event loop.
-        app.state.card = await asyncio.to_thread(resolve_champion, app.state.registry, REGISTRY_MODEL)
-        log.info("serving %s v%s (%s)", REGISTRY_MODEL, app.state.card.version, app.state.card.model_id)
-
-    # The traffic split is checked before anything is opened too: a typo in TRAFFIC_GREEN stops startup.
+    # Settings are checked FIRST, before any connection is opened: a typo in TRAFFIC_GREEN stops startup.
     app.state.split = split_from_env(TRAFFIC_GREEN)
     if app.state.split.green and not GREEN_URL:
         raise ValueError(f"TRAFFIC_GREEN={app.state.split.green} sends traffic to green, but GREEN_URL is not set")
 
+    # Then the cards. With the registry on and no usable card for a side there is nothing correct to serve there,
+    # so startup fails (fail fast: the container restarts and tries again).
+    app.state.registry = None
+    app.state.reload = {"ok": 0, "failed": 0, "last_error": None}
+    aliases = card_aliases()
+    cards: dict[str, ServingCard | None] = dict.fromkeys(aliases)
+    if MLFLOW_TRACKING_URI:
+        app.state.registry = make_registry_client()
+        # The MLflow client is blocking (requests), so it runs on a worker thread: never block the event loop.
+        cards = await asyncio.to_thread(resolve_cards, app.state.registry, aliases)
+        log.info("serving %s %s", REGISTRY_MODEL, describe(cards))
+
     # One pooled client per model server, created at startup and closed at shutdown (Week 2's pattern).
-    app.state.sides = {BLUE: Side.create(BLUE, UPSTREAM_URL)}
+    app.state.sides = {BLUE: Side.create(BLUE, UPSTREAM_URL, cards[BLUE])}
     if GREEN_URL:
-        app.state.sides[GREEN] = Side.create(GREEN, GREEN_URL)
+        app.state.sides[GREEN] = Side.create(GREEN, GREEN_URL, cards[GREEN])
     # Redis: the pool is created lazily, so a Redis that is down at startup does not stop the gateway from booting.
     # BlockingConnectionPool makes request N+1 WAIT (up to REDIS_POOL_TIMEOUT) when all connections are busy,
     # instead of failing instantly like the plain ConnectionPool.
@@ -191,21 +214,27 @@ def traffic_status(app: FastAPI) -> dict:
             "in_flight": side.admission.in_flight,
             "queued": side.admission.queued,
             "routed": side.routed,
+            "card": side.card.version if side.card else None,
         }
         for name, side in app.state.sides.items()
     }
 
 
 def registry_status(app: FastAPI) -> dict | str:
-    card: ServingCard | None = app.state.card
-    if card is None:
+    if app.state.registry is None:
         return "off"
+
+    def fields(card: ServingCard) -> dict:
+        return {"version": card.version, "model_id": card.model_id, "temperature": card.temperature,
+                "max_tokens": card.max_tokens}  # fmt: skip
+
+    sides: dict[str, Side] = app.state.sides
+    if len(sides) == 1:  # one model server: the Week 5 shape, the champion's card
+        return {"model": REGISTRY_MODEL, **fields(sides[BLUE].card), "reloads": app.state.reload}
+    aliases = card_aliases()
     return {
         "model": REGISTRY_MODEL,
-        "version": card.version,
-        "model_id": card.model_id,
-        "temperature": card.temperature,
-        "max_tokens": card.max_tokens,
+        "sides": {name: {"alias": aliases[name], **fields(side.card)} for name, side in sides.items()},
         "reloads": app.state.reload,
     }
 
@@ -221,30 +250,39 @@ def admin_denied(request: Request) -> Response | None:
 
 @app.post("/admin/reload")
 async def reload_champion(request: Request):
-    """Re-read the champion card. On any failure the current card stays in place and the answer says why."""
+    """Re-read every side's card. On any failure all the current cards stay in place and the answer says why."""
     if denied := admin_denied(request):
         return denied
     if request.app.state.registry is None:
         return error(409, "registry_off", "The registry is off (MLFLOW_TRACKING_URI is not set).")
 
-    old: ServingCard = request.app.state.card
+    sides: dict[str, Side] = request.app.state.sides
+    old = {name: side.card for name, side in sides.items()}
     reload = request.app.state.reload
     try:
-        new = await asyncio.to_thread(resolve_champion, request.app.state.registry, REGISTRY_MODEL)
+        new = await asyncio.to_thread(resolve_cards, request.app.state.registry, card_aliases())
     except ChampionError as e:
         reload["failed"] += 1
         reload["last_error"] = str(e)
-        log.warning("reload failed, still serving v%s: %s", old.version, e)
-        return error(503, "reload_failed", f"Still serving v{old.version}. {e}")
+        log.warning("reload failed, still serving %s: %s", describe(old), e)
+        return error(503, "reload_failed", f"Still serving {describe(old)}. {e}")
 
-    # The switch: one reference assignment. Requests already running keep the card object they started with;
-    # every request that starts after this line gets the new one.
-    request.app.state.card = new
+    # The switch: one reference assignment per side, with no `await` in between, so no request can run in the
+    # middle of it (asyncio switches tasks only at an await). Requests already running keep the card object they
+    # started with; every request that starts after this loop gets the new ones.
+    for name, side in sides.items():
+        side.card = new[name]
     reload["ok"] += 1
     reload["last_error"] = None
-    if new != old:
-        log.info("champion changed: v%s -> v%s (%s)", old.version, new.version, new.model_id)
-    return {"version": new.version, "previous": old.version, "changed": new != old}
+    changed = new != old
+    if changed:
+        log.info("cards changed: %s -> %s", describe(old), describe(new))
+    if len(sides) == 1:  # one model server: the Week 5 answer
+        return {"version": new[BLUE].version, "previous": old[BLUE].version, "changed": changed}
+    return {
+        "sides": {name: {"version": new[name].version, "previous": old[name].version} for name in sides},
+        "changed": changed,
+    }
 
 
 @app.post("/admin/traffic")
@@ -343,16 +381,16 @@ async def chat_completions(request: Request):
             request.app.state.cleaning["requests_changed"] += 1
             request.app.state.cleaning["chars_removed"] += removed
 
-    # 2b. Apply the champion card (Week 5), after cleaning: the card is trusted operator config, not user input.
-    # Read app.state.card ONCE: if a reload swaps it during this request, this request still uses one whole card.
-    card: ServingCard | None = request.app.state.card
-    if card is not None:
-        body = apply_card(body, card)
-
-    # 2c. Blue or green (Week 6): decided ONCE, here. The request stays on this side to the end, even if the split
+    # 2b. Blue or green (Week 6): decided ONCE, here. The request stays on this side to the end, even if the split
     # changes while it streams, so moving traffic never cuts a request off halfway.
     side: Side = request.app.state.sides[choose(request.app.state.split, random.random())]
     side.routed += 1
+
+    # 2c. Apply THAT side's card (Week 5), after cleaning: the card is trusted operator config, not user input.
+    # Read side.card ONCE: if a reload swaps it during this request, this request still uses one whole card.
+    card: ServingCard | None = side.card
+    if card is not None:
+        body = apply_card(body, card)
 
     # 3. Admission: wait for a turn at THIS side's model server, or be turned away.
     admission: Admission = side.admission

@@ -4,6 +4,9 @@ resolve_champion()  follows the `champion` alias in the MLflow registry to a mod
                     version's card (written by week05-mlflow-registry/scripts/register.py), checks it, returns it.
 apply_card()        applies a card to one chat request before it is forwarded.
 
+Week 6: resolve_champion(..., alias="green") follows any alias the same way. With Blue/Green on, each model server
+follows its own alias (`blue`, `green`); `champion` stays the record of what is officially released.
+
     from mlflow import MlflowClient
     card = resolve_champion(MlflowClient("http://localhost:5001"))
     card.model_id, card.temperature   # -> "Qwen/Qwen2.5-0.5B-Instruct", 0.7
@@ -40,34 +43,36 @@ class ServingCard:
     system_prompt: str
 
 
-def resolve_champion(client, name: str = MODEL_NAME, last_good: ServingCard | None = None) -> ServingCard:
-    """Return the card the `champion` alias points at.
+def resolve_champion(
+    client, name: str = MODEL_NAME, last_good: ServingCard | None = None, alias: str = CHAMPION
+) -> ServingCard:
+    """Return the card the `champion` alias (or another `alias`) points at.
 
     If anything goes wrong (MLflow down, no champion alias, a broken card):
       - with last_good: log a WARNING saying what went wrong, and return last_good (the same object)
       - without it:     raise ChampionError saying what went wrong
     """
     try:
-        return _fetch(client, name)
+        return _fetch(client, name, alias)
     except ChampionError as e:
         if last_good is None:
             raise
         # Loud on purpose: a silent fallback would hide exactly the kind of failure Month 2 is about.
-        log.warning("could not load the %s card, still serving v%s: %s", CHAMPION, last_good.version, e)
+        log.warning("could not load the %s card, still serving v%s: %s", alias, last_good.version, e)
         return last_good
 
 
-def _fetch(client, name: str) -> ServingCard:
+def _fetch(client, name: str, alias: str) -> ServingCard:
     # 1. Network: two calls to MLflow. Any failure here (server down, alias missing, artifact missing) becomes a
     #    ChampionError, so callers handle one exception type, not mlflow's, requests' and the OS's.
     try:
-        mv = client.get_model_version_by_alias(name, CHAMPION)
+        mv = client.get_model_version_by_alias(name, alias)
         # Download by the version we just got (its run), not by "models:/name@champion" again. If someone moves
         # the alias between the two calls, the card and the version number still match.
         with tempfile.TemporaryDirectory() as tmp:
             text = Path(client.download_artifacts(mv.run_id, CARD_PATH, tmp)).read_text()
     except Exception as e:  # deliberately broad: see above
-        raise ChampionError(f"could not fetch the {CHAMPION} card of {name}: {e}") from e
+        raise ChampionError(f"could not fetch the {alias} card of {name}: {e}") from e
 
     # 2. Parse and check: the card is data typed by a human, so trust nothing about its shape.
     try:

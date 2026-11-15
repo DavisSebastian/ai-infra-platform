@@ -15,7 +15,7 @@ import time
 
 from fastapi import FastAPI
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 CHUNKS = int(os.getenv("FAKE_CHUNKS", "20"))
 CHUNK_DELAY = float(os.getenv("FAKE_CHUNK_DELAY", "0.02"))  # seconds between chunks (20 ms, like a fast GPU)
@@ -28,6 +28,9 @@ last_request: dict = {}  # the last chat request received, so tests can see what
 
 
 class ChatRequest(BaseModel):
+    # Keep fields this fake doesn't use (model, temperature, ...) so /_last_request shows everything forwarded.
+    model_config = ConfigDict(extra="allow")
+
     messages: list[dict]
     max_tokens: int | None = None
     stream: bool = False

@@ -122,3 +122,76 @@ jobs:
 
       - name: Run Week 4 tests
         run: uv run pytest -v week04-cpp-cleaner/tests
+
+  test-week05:
+    # The model registry against a REAL MLflow + Postgres, started from the same compose file used locally.
+    # Unit tests (with fake registries) run first; then the real server checks that the fakes still tell the truth.
+    runs-on: ubuntu-latest
+
+    env:
+      MLFLOW_TRACKING_URI: http://localhost:5001
+      REGISTRY_MODEL: gateway-llm-ci # its own model name, never the real gateway-llm
+      ADMIN_TOKEN: ci-admin-token # throwaway value for this job only; a real deployment reads it from a secret
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "0" # fail in seconds, not after the client's ~4 minutes of retries
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # week05-registry, not week05: the MLflow client without torch. CI registers cards but doesn't score them.
+      # week03-serve: the gateway package, for resolve_champion() and the end-to-end check.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve --group week05-registry
+
+      - name: Run Week 5 unit tests (release.py rules, fake registry)
+        run: uv run pytest -v week05-mlflow-registry/tests
+
+      - name: Start MLflow + Postgres
+        working-directory: week05-mlflow-registry
+        run: docker compose up -d --build --wait
+
+      - name: Register three cards and promote (v3 has eval=failed and must be refused)
+        run: uv run python week05-mlflow-registry/scripts/ci_registry_check.py seed
+
+      # The point of Postgres + named volumes: records must outlive the containers. `down` without -v keeps volumes.
+      - name: Restart the stack
+        working-directory: week05-mlflow-registry
+        run: |
+          docker compose down
+          docker compose up -d --wait
+
+      - name: Check the champion survived, and the real server's error codes match the fakes
+        run: uv run python week05-mlflow-registry/scripts/ci_registry_check.py verify
+
+      - name: Start the gateway against the registry
+        run: |
+          RATE_LIMIT_ENABLED=0 uv run uvicorn gateway.main:app --port 8080 > gateway.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:8080/health > /dev/null && exit 0; sleep 1; done
+          exit 1
+
+      - name: The gateway serves champion v2
+        run: |
+          curl -s localhost:8080/health | jq .registry
+          test "$(curl -s localhost:8080/health | jq -r .registry.version)" = "2"
+
+      - name: Roll back in the registry, reload the gateway without a restart, now it serves v1
+        run: |
+          uv run python week05-mlflow-registry/scripts/release.py rollback --reason "ci check"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/admin/reload)" = "403"
+          curl -sf -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8080/admin/reload | jq
+          test "$(curl -s localhost:8080/health | jq -r .registry.version)" = "1"
+
+      - name: Show logs if anything failed
+        if: failure()
+        run: |
+          cat gateway.log || true
+          (cd week05-mlflow-registry && docker compose logs --tail 50)

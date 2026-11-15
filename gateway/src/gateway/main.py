@@ -1,16 +1,20 @@
 """Week 3: the gateway in front of the model server.
 
-POST /v1/chat/completions   rate limit (429) -> clean prompt (C++) -> admission (503) -> forwarded, chunks relayed live
+POST /v1/chat/completions   rate limit (429) -> clean prompt (C++) -> apply champion card -> admission (503)
+                            -> forwarded, chunks relayed live
 GET  /health
+POST /admin/reload          Week 5: re-read the `champion` card from the MLflow registry (needs X-Admin-Token)
 
 Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn gateway.main:app --port 8080
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import math
 import os
+import secrets
 from contextlib import asynccontextmanager
 
 import aiohttp
@@ -21,6 +25,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
 from gateway.admission import Admission, ClientGone, Rejected
+from gateway.champion import ChampionError, ServingCard, apply_card, resolve_champion
 from gateway.redis_limiter import RedisTokenBucket
 from gateway.sanitize import clean_body
 from gateway.upstream import UpstreamClient, make_client
@@ -56,9 +61,36 @@ OVERLOAD_RETRY_AFTER = int(os.getenv("OVERLOAD_RETRY_AFTER", "5"))  # seconds, s
 CLEAN_PROMPTS = os.getenv("CLEAN_PROMPTS", "1") == "1"
 PROMPT_MAX_CHARS = int(os.environ["PROMPT_MAX_CHARS"]) if os.getenv("PROMPT_MAX_CHARS") else None
 
+# Model registry (Week 5). Unset = registry off: requests are forwarded as they are, as in Weeks 3-4.
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
+REGISTRY_MODEL = os.getenv("REGISTRY_MODEL", "gateway-llm")
+# A secret: POST /admin/reload changes what every user gets, so it needs this in X-Admin-Token. Unset = no reloads.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+
+
+def make_registry_client():
+    # MLflow's client retries an unreachable server for about 4 minutes by default (measured: 247 s). At startup
+    # that hangs the gateway; on reload it holds the admin call. Fail fast instead, unless set explicitly.
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+    from mlflow import MlflowClient  # imported only when the registry is on: it's a slow import
+
+    return MlflowClient(MLFLOW_TRACKING_URI)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # The champion card comes FIRST, before any connection is opened. With the registry on and no usable card there
+    # is nothing correct to serve, so startup fails (fail fast: the container restarts and tries again).
+    app.state.registry = None
+    app.state.card = None
+    app.state.reload = {"ok": 0, "failed": 0, "last_error": None}
+    if MLFLOW_TRACKING_URI:
+        app.state.registry = make_registry_client()
+        # The MLflow client is blocking (requests), so it runs on a worker thread: never block the event loop.
+        app.state.card = await asyncio.to_thread(resolve_champion, app.state.registry, REGISTRY_MODEL)
+        log.info("serving %s v%s (%s)", REGISTRY_MODEL, app.state.card.version, app.state.card.model_id)
+
     # One pooled client for the whole process, created at startup and closed at shutdown (Week 2's pattern).
     app.state.upstream = make_client(PROXY_CLIENT, UPSTREAM_URL, UPSTREAM_MAX_CONNECTIONS, UPSTREAM_CONNECT_TIMEOUT)
     # Redis: the pool is created lazily, so a Redis that is down at startup does not stop the gateway from booting.
@@ -94,7 +126,9 @@ async def health(request: Request):
         redis_status = "ok"
     except (redis.RedisError, OSError):
         redis_status = "down"
-    status = "ok" if redis_status == "ok" else "degraded"
+    # A failed reload also degrades: the gateway is serving an older card than the registry says it should.
+    reload = request.app.state.reload
+    status = "ok" if redis_status == "ok" and reload["last_error"] is None else "degraded"
     return {
         "status": status,
         "redis": redis_status,
@@ -105,7 +139,52 @@ async def health(request: Request):
         "cleaning": request.app.state.cleaning,
         "upstream": UPSTREAM_URL,
         "client": PROXY_CLIENT,
+        "registry": registry_status(request.app),
     }
+
+
+def registry_status(app: FastAPI) -> dict | str:
+    card: ServingCard | None = app.state.card
+    if card is None:
+        return "off"
+    return {
+        "model": REGISTRY_MODEL,
+        "version": card.version,
+        "model_id": card.model_id,
+        "temperature": card.temperature,
+        "max_tokens": card.max_tokens,
+        "reloads": app.state.reload,
+    }
+
+
+@app.post("/admin/reload")
+async def reload_champion(request: Request):
+    """Re-read the champion card. On any failure the current card stays in place and the answer says why."""
+    token = request.headers.get("x-admin-token", "")
+    # compare_digest takes the same time however many characters match, so the token can't be guessed by timing.
+    if not ADMIN_TOKEN or not secrets.compare_digest(token.encode(), ADMIN_TOKEN.encode()):
+        return error(403, "forbidden", "Reloading needs a valid X-Admin-Token (and ADMIN_TOKEN set on the gateway).")
+    if request.app.state.registry is None:
+        return error(409, "registry_off", "The registry is off (MLFLOW_TRACKING_URI is not set).")
+
+    old: ServingCard = request.app.state.card
+    reload = request.app.state.reload
+    try:
+        new = await asyncio.to_thread(resolve_champion, request.app.state.registry, REGISTRY_MODEL)
+    except ChampionError as e:
+        reload["failed"] += 1
+        reload["last_error"] = str(e)
+        log.warning("reload failed, still serving v%s: %s", old.version, e)
+        return error(503, "reload_failed", f"Still serving v{old.version}. {e}")
+
+    # The switch: one reference assignment. Requests already running keep the card object they started with;
+    # every request that starts after this line gets the new one.
+    request.app.state.card = new
+    reload["ok"] += 1
+    reload["last_error"] = None
+    if new != old:
+        log.info("champion changed: v%s -> v%s (%s)", old.version, new.version, new.model_id)
+    return {"version": new.version, "previous": old.version, "changed": new != old}
 
 
 def client_id(request: Request) -> str:
@@ -181,6 +260,12 @@ async def chat_completions(request: Request):
         if removed:
             request.app.state.cleaning["requests_changed"] += 1
             request.app.state.cleaning["chars_removed"] += removed
+
+    # 2b. Apply the champion card (Week 5), after cleaning: the card is trusted operator config, not user input.
+    # Read app.state.card ONCE: if a reload swaps it during this request, this request still uses one whole card.
+    card: ServingCard | None = request.app.state.card
+    if card is not None:
+        body = apply_card(body, card)
 
     # 3. Admission: wait for a turn at the upstream, or be turned away.
     admission: Admission = request.app.state.admission

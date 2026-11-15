@@ -47,12 +47,17 @@ week04 = [
     "promptclean",
 ]
 
-week05 = [
+week05-registry = [
+    # Everything Week 5 needs EXCEPT the model libraries: release.py, the registering half of register.py, and the
+    # CI registry check. CI installs just this (no torch), like week02-serve.
     # The MLflow server runs in Docker (week05-mlflow-registry/docker-compose.yml). Scripts only talk to it over
     # HTTP, so the client-only "skinny" package is enough. Pinned to the server's version: client and server
     # should match.
     "mlflow-skinny==3.17.2",
     "pyyaml>=6",
+]
+week05 = [
+    {include-group = "week05-registry"},
     # register.py runs each card's model locally to score it (same libraries as Week 2).
     "torch>=2.4",
     "transformers>=4.45",

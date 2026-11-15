@@ -11,6 +11,9 @@ One call does four things:
 
 Nothing here moves the `champion` alias. Registering and promoting are separate steps on purpose,
 like `mvn deploy` (publish the artifact) vs actually rolling it out.
+
+torch and transformers are imported inside the scoring functions only: CI imports log_and_register() (steps 3-4)
+with no model libraries installed (ci_registry_check.py).
 """
 
 import argparse
@@ -22,19 +25,19 @@ import time
 from pathlib import Path
 
 import mlflow
-import torch
 import yaml
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, set_seed
 
-MODEL_NAME = "gateway-llm"
+MODEL_NAME = os.getenv("REGISTRY_MODEL", "gateway-llm")  # same variable the gateway reads
 EXPERIMENT = "gateway-llm-cards"
 EVAL_FILE = Path(__file__).resolve().parent.parent / "eval_prompts.yaml"
 TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
 
 
 def pick_device() -> str:
+    import torch
+
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -44,6 +47,8 @@ def pick_device() -> str:
 
 def ask(model, tokenizer, card: dict, prompt: str) -> tuple[str, float]:
     """One prompt with the card's settings. Returns (answer, ms until the first piece of text)."""
+    from transformers import TextIteratorStreamer
+
     messages = [{"role": "system", "content": card["system_prompt"]}, {"role": "user", "content": prompt}]
     inputs = tokenizer.apply_chat_template(
         messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
@@ -78,6 +83,9 @@ def passes(answer: str, keywords: list[str]) -> bool:
 
 
 def score(card: dict) -> tuple[dict, list[dict]]:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
+
     cases = yaml.safe_load(EVAL_FILE.read_text())
     device = pick_device()
     print(f"loading {card['model_id']} on {device} ...")
@@ -110,23 +118,16 @@ def ensure_registered_model(client: MlflowClient) -> None:
             raise
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("card", type=Path, help="path to a settings card (YAML)")
-    parser.add_argument("--threshold", type=float, default=0.8, help="minimum pass_rate to tag eval=passed")
-    args = parser.parse_args()
-
-    card = yaml.safe_load(args.card.read_text())
-    metrics, results = score(card)
-    verdict = "passed" if metrics["pass_rate"] >= args.threshold else "failed"
-
+def log_and_register(
+    card: dict, card_file: str, metrics: dict, results: list[dict], verdict: str, extra_params: dict | None = None
+):
+    """Steps 3-4: log one run for the card, register it as a new version. Returns (version, run)."""
     mlflow.set_tracking_uri(TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT)
     client = MlflowClient()
 
-    with mlflow.start_run(run_name=args.card.stem) as run:
-        mlflow.log_params(card)
-        mlflow.log_param("eval_threshold", args.threshold)
+    with mlflow.start_run(run_name=Path(card_file).stem) as run:
+        mlflow.log_params({**card, **(extra_params or {})})
         mlflow.log_metrics(metrics)
         # The card itself, under a fixed name, so whoever loads "the champion" always finds the same file.
         mlflow.log_text(yaml.safe_dump(card, sort_keys=False), "card/serving_config.yaml")
@@ -138,8 +139,23 @@ def main() -> None:
         name=MODEL_NAME,
         source=f"{run.info.artifact_uri}/card",  # the version points at the card folder in that run
         run_id=run.info.run_id,
-        tags={"eval": verdict, "card_file": args.card.name},
+        tags={"eval": verdict, "card_file": card_file},
         description=f"{card['model_id']} @ temperature {card['temperature']}",
+    )
+    return version, run
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("card", type=Path, help="path to a settings card (YAML)")
+    parser.add_argument("--threshold", type=float, default=0.8, help="minimum pass_rate to tag eval=passed")
+    args = parser.parse_args()
+
+    card = yaml.safe_load(args.card.read_text())
+    metrics, results = score(card)
+    verdict = "passed" if metrics["pass_rate"] >= args.threshold else "failed"
+    version, run = log_and_register(
+        card, args.card.name, metrics, results, verdict, extra_params={"eval_threshold": args.threshold}
     )
 
     print(

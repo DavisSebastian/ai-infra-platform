@@ -47,6 +47,18 @@ week04 = [
     "promptclean",
 ]
 
+week05 = [
+    # The MLflow server runs in Docker (week05-mlflow-registry/docker-compose.yml). Scripts only talk to it over
+    # HTTP, so the client-only "skinny" package is enough. Pinned to the server's version: client and server
+    # should match.
+    "mlflow-skinny==3.17.2",
+    "pyyaml>=6",
+    # register.py runs each card's model locally to score it (same libraries as Week 2).
+    "torch>=2.4",
+    "transformers>=4.45",
+    "accelerate>=0.34",
+]
+
 [tool.uv.sources]
 promptclean = { path = "week04-cpp-cleaner" }
 gateway = { path = "gateway", editable = true }  # editable: code edits apply without reinstalling

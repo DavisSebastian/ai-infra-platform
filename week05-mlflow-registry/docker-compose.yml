@@ -1,0 +1,66 @@
+# Week 5's model registry: an MLflow tracking server, with Postgres for records and a volume for files.
+#
+#   docker compose up -d --build --wait   build, start, and wait until both services are healthy
+#   open http://localhost:5001             the MLflow UI (5001, because macOS AirPlay holds 5000)
+#   docker compose down                    stop; the volumes, and so every run and model version, survive
+#   docker compose down -v                 stop AND delete the volumes: a clean slate
+#
+# Two kinds of storage, two homes:
+#   - records (runs, params, metrics, model versions, aliases, tags) -> Postgres, volume `pgdata`
+#   - files (artifacts such as serving_config.yaml)                  -> /mlartifacts, volume `artifacts`
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_DB: mlflow
+      # A local-only default so `docker compose up` just works. Anywhere real, set MLFLOW_DB_PASSWORD
+      # (shell or a .env file that is never committed) and the default is ignored.
+      POSTGRES_PASSWORD: ${MLFLOW_DB_PASSWORD:-mlflow-dev}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # "Is the database accepting connections?" Started is not the same as ready.
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: mlflow.Dockerfile
+    image: mlflow-pg:3.17.2
+    ports:
+      - "5001:5000" # Mac port : container port
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      # `+psycopg2` names the driver. A bare postgresql:// means "SQLAlchemy's default driver", and
+      # SQLAlchemy 2.1 switched that default to psycopg (v3), which this image doesn't have.
+      - --backend-store-uri=postgresql+psycopg2://mlflow:${MLFLOW_DB_PASSWORD:-mlflow-dev}@postgres:5432/mlflow
+      # The server itself stores and serves artifacts: clients upload over HTTP and never need
+      # to see this path. Without it, clients would try to write to the server's disk directly.
+      - --artifacts-destination=/mlartifacts
+      # MLflow 3 rejects requests whose Host header isn't on this list (DNS-rebinding protection).
+      # The default covers localhost and private IPs, but not the name `mlflow`, which is what other
+      # containers (the gateway, CI) use.
+      - --allowed-hosts=mlflow,mlflow:5000,localhost,localhost:*,127.0.0.1,127.0.0.1:*
+    volumes:
+      - artifacts:/mlartifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# Named volumes live outside the containers, so `down` + `up` keeps the data. Only `down -v` removes them.
+volumes:
+  pgdata:
+  artifacts:

@@ -1,0 +1,5 @@
+# Same as v1 except two knobs: a 3x bigger model and a lower temperature (less random answers).
+model_id: Qwen/Qwen2.5-1.5B-Instruct
+temperature: 0.3
+max_tokens: 64
+system_prompt: You are a concise assistant. Answer in one short sentence.

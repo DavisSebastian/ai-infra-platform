@@ -1,0 +1,6 @@
+# A settings card: everything the gateway needs to know to serve "this version" of the LLM.
+# register.py scores it and stores it in MLflow as one version of `gateway-llm`.
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+temperature: 0.7
+max_tokens: 64
+system_prompt: You are a concise assistant. Answer in one short sentence.

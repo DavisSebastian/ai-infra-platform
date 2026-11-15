@@ -1,0 +1,23 @@
+# The score sheet's questions. A prompt passes if the answer contains ANY of its keywords
+# (whole word, case-insensitive). Crude on purpose: it's a smoke test that catches a broken or much
+# worse card, not a benchmark. Real eval suites (and LLM-as-judge) come later in the roadmap.
+- prompt: What is the capital of France?
+  keywords: [paris]
+- prompt: What is 12 multiplied by 12? Reply with just the number.
+  keywords: ["144"]
+- prompt: Which planet is known as the Red Planet?
+  keywords: [mars]
+- prompt: What is the chemical symbol for gold?
+  keywords: [au]
+- prompt: Who wrote Romeo and Juliet?
+  keywords: [shakespeare]
+- prompt: What gas do plants take in from the air for photosynthesis?
+  keywords: [carbon dioxide, co2]
+- prompt: Which HTTP status code means "Not Found"?
+  keywords: ["404"]
+- prompt: What is the largest ocean on Earth?
+  keywords: [pacific]
+- prompt: In Python, which keyword starts a function definition?
+  keywords: [def]
+- prompt: What is 17 multiplied by 23? Reply with just the number.
+  keywords: ["391"]

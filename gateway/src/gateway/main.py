@@ -4,6 +4,7 @@ POST /v1/chat/completions   rate limit (429) -> clean prompt (C++) -> apply cham
                             -> forwarded, chunks relayed live
 GET  /health
 POST /admin/reload          Week 5: re-read the `champion` card from the MLflow registry (needs X-Admin-Token)
+POST /admin/traffic         Week 6: set the Blue/Green split, e.g. {"green": 10} (needs X-Admin-Token)
 
 Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn gateway.main:app --port 8080
 """
@@ -14,8 +15,10 @@ import json
 import logging
 import math
 import os
+import random
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import aiohttp
 import anyio
@@ -27,12 +30,13 @@ from fastapi.responses import StreamingResponse
 from gateway.admission import Admission, ClientGone, Rejected
 from gateway.champion import ChampionError, ServingCard, apply_card, resolve_champion
 from gateway.redis_limiter import RedisTokenBucket
+from gateway.router import BLUE, GREEN, TrafficSplit, choose, split_from_env
 from gateway.sanitize import clean_body
 from gateway.upstream import UpstreamClient, make_client
 
 log = logging.getLogger("uvicorn.error")
 
-UPSTREAM_URL = os.getenv("UPSTREAM_URL", "http://localhost:9000")
+UPSTREAM_URL = os.getenv("UPSTREAM_URL", "http://localhost:9000")  # the blue model server
 PROXY_CLIENT = os.getenv("PROXY_CLIENT", "aiohttp")  # "aiohttp" or "httpx"
 UPSTREAM_MAX_CONNECTIONS = int(os.getenv("UPSTREAM_MAX_CONNECTIONS", "100"))
 UPSTREAM_CONNECT_TIMEOUT = float(os.getenv("UPSTREAM_CONNECT_TIMEOUT", "5"))
@@ -67,6 +71,30 @@ REGISTRY_MODEL = os.getenv("REGISTRY_MODEL", "gateway-llm")
 # A secret: POST /admin/reload changes what every user gets, so it needs this in X-Admin-Token. Unset = no reloads.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 
+# Blue/Green (Week 6). Blue is UPSTREAM_URL. GREEN_URL unset = one model server only, as in Weeks 3-5.
+GREEN_URL = os.getenv("GREEN_URL")
+TRAFFIC_GREEN = os.getenv("TRAFFIC_GREEN")  # starting percent of requests sent to green; unset = 0
+
+
+@dataclass
+class Side:
+    """One model server and everything the gateway keeps for it.
+
+    Each side has its OWN pooled client and its OWN admission limit: each server has its own capacity, so a full
+    queue on blue must not turn away a request that is going to an idle green.
+    """
+
+    name: str
+    url: str
+    upstream: UpstreamClient
+    admission: Admission
+    routed: int = 0  # requests choose() sent to this side
+
+    @classmethod
+    def create(cls, name: str, url: str) -> "Side":
+        upstream = make_client(PROXY_CLIENT, url, UPSTREAM_MAX_CONNECTIONS, UPSTREAM_CONNECT_TIMEOUT)
+        return cls(name, url, upstream, Admission(MAX_IN_FLIGHT, MAX_QUEUE, QUEUE_TIMEOUT))
+
 
 def make_registry_client():
     # MLflow's client retries an unreachable server for about 4 minutes by default (measured: 247 s). At startup
@@ -91,8 +119,15 @@ async def lifespan(app: FastAPI):
         app.state.card = await asyncio.to_thread(resolve_champion, app.state.registry, REGISTRY_MODEL)
         log.info("serving %s v%s (%s)", REGISTRY_MODEL, app.state.card.version, app.state.card.model_id)
 
-    # One pooled client for the whole process, created at startup and closed at shutdown (Week 2's pattern).
-    app.state.upstream = make_client(PROXY_CLIENT, UPSTREAM_URL, UPSTREAM_MAX_CONNECTIONS, UPSTREAM_CONNECT_TIMEOUT)
+    # The traffic split is checked before anything is opened too: a typo in TRAFFIC_GREEN stops startup.
+    app.state.split = split_from_env(TRAFFIC_GREEN)
+    if app.state.split.green and not GREEN_URL:
+        raise ValueError(f"TRAFFIC_GREEN={app.state.split.green} sends traffic to green, but GREEN_URL is not set")
+
+    # One pooled client per model server, created at startup and closed at shutdown (Week 2's pattern).
+    app.state.sides = {BLUE: Side.create(BLUE, UPSTREAM_URL)}
+    if GREEN_URL:
+        app.state.sides[GREEN] = Side.create(GREEN, GREEN_URL)
     # Redis: the pool is created lazily, so a Redis that is down at startup does not stop the gateway from booting.
     # BlockingConnectionPool makes request N+1 WAIT (up to REDIS_POOL_TIMEOUT) when all connections are busy,
     # instead of failing instantly like the plain ConnectionPool.
@@ -106,12 +141,12 @@ async def lifespan(app: FastAPI):
     app.state.redis = redis.Redis(connection_pool=pool)
     app.state.limiter = RedisTokenBucket(app.state.redis, RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_PER_SEC)
     app.state.rate_limit_fail_open = 0  # how many requests were let through UNCHECKED because Redis failed
-    app.state.admission = Admission(MAX_IN_FLIGHT, MAX_QUEUE, QUEUE_TIMEOUT)
     app.state.counts = {"overloaded": 0, "queue_timeout": 0, "client_gone": 0, "upstream_error": 0}
     app.state.cleaning = {"requests_changed": 0, "chars_removed": 0}
     yield
     await app.state.redis.aclose()
-    await app.state.upstream.aclose()
+    for side in app.state.sides.values():
+        await side.upstream.aclose()
 
 
 app = FastAPI(title="Week 3 - Gateway", lifespan=lifespan)
@@ -129,17 +164,35 @@ async def health(request: Request):
     # A failed reload also degrades: the gateway is serving an older card than the registry says it should.
     reload = request.app.state.reload
     status = "ok" if redis_status == "ok" and reload["last_error"] is None else "degraded"
+    sides = request.app.state.sides.values()
     return {
         "status": status,
         "redis": redis_status,
         "rate_limit_fail_open": request.app.state.rate_limit_fail_open,
-        "in_flight": request.app.state.admission.in_flight,
-        "queued": request.app.state.admission.queued,
+        "in_flight": sum(s.admission.in_flight for s in sides),  # totals across both sides
+        "queued": sum(s.admission.queued for s in sides),
         "rejected": request.app.state.counts,
         "cleaning": request.app.state.cleaning,
         "upstream": UPSTREAM_URL,
         "client": PROXY_CLIENT,
         "registry": registry_status(request.app),
+        "traffic": traffic_status(request.app),
+    }
+
+
+def traffic_status(app: FastAPI) -> dict:
+    """Per side: its share and how busy it is. in_flight 0 on a side with weight 0 = drained, safe to stop."""
+    split: TrafficSplit = app.state.split
+    weights = {BLUE: split.blue, GREEN: split.green}
+    return {
+        name: {
+            "url": side.url,
+            "weight": weights[name],
+            "in_flight": side.admission.in_flight,
+            "queued": side.admission.queued,
+            "routed": side.routed,
+        }
+        for name, side in app.state.sides.items()
     }
 
 
@@ -157,13 +210,20 @@ def registry_status(app: FastAPI) -> dict | str:
     }
 
 
-@app.post("/admin/reload")
-async def reload_champion(request: Request):
-    """Re-read the champion card. On any failure the current card stays in place and the answer says why."""
+def admin_denied(request: Request) -> Response | None:
+    """A 403 unless the request carries the admin token. Admin calls change what every user gets."""
     token = request.headers.get("x-admin-token", "")
     # compare_digest takes the same time however many characters match, so the token can't be guessed by timing.
     if not ADMIN_TOKEN or not secrets.compare_digest(token.encode(), ADMIN_TOKEN.encode()):
-        return error(403, "forbidden", "Reloading needs a valid X-Admin-Token (and ADMIN_TOKEN set on the gateway).")
+        return error(403, "forbidden", "Admin calls need a valid X-Admin-Token (and ADMIN_TOKEN set on the gateway).")
+    return None
+
+
+@app.post("/admin/reload")
+async def reload_champion(request: Request):
+    """Re-read the champion card. On any failure the current card stays in place and the answer says why."""
+    if denied := admin_denied(request):
+        return denied
     if request.app.state.registry is None:
         return error(409, "registry_off", "The registry is off (MLFLOW_TRACKING_URI is not set).")
 
@@ -185,6 +245,28 @@ async def reload_champion(request: Request):
     if new != old:
         log.info("champion changed: v%s -> v%s (%s)", old.version, new.version, new.model_id)
     return {"version": new.version, "previous": old.version, "changed": new != old}
+
+
+@app.post("/admin/traffic")
+async def set_traffic(request: Request):
+    """Set the Blue/Green split: {"green": 10} sends 10% of NEW requests to green. Requests already running keep
+    the side they started on. {"green": 0} is the rollback: all new requests back to blue at once."""
+    if denied := admin_denied(request):
+        return denied
+    try:
+        green = json.loads(await request.body())["green"]
+        new = TrafficSplit(green)
+    except (ValueError, KeyError, TypeError) as e:  # not JSON, no "green", or TrafficSplit refused the value
+        return error(400, "bad_split", f'Send {{"green": <whole number from 0 to 100>}}. {e}')
+    if new.green and GREEN not in request.app.state.sides:
+        return error(409, "green_off", "There is no green model server (GREEN_URL is not set).")
+
+    old: TrafficSplit = request.app.state.split
+    # The switch: one reference assignment, as in /admin/reload. Every request that starts after this line uses it.
+    request.app.state.split = new
+    if new != old:
+        log.info("traffic: green %s%% -> %s%%", old.green, new.green)
+    return {"green": new.green, "blue": new.blue, "previous": old.green, "changed": new != old}
 
 
 def client_id(request: Request) -> str:
@@ -267,8 +349,13 @@ async def chat_completions(request: Request):
     if card is not None:
         body = apply_card(body, card)
 
-    # 3. Admission: wait for a turn at the upstream, or be turned away.
-    admission: Admission = request.app.state.admission
+    # 2c. Blue or green (Week 6): decided ONCE, here. The request stays on this side to the end, even if the split
+    # changes while it streams, so moving traffic never cuts a request off halfway.
+    side: Side = request.app.state.sides[choose(request.app.state.split, random.random())]
+    side.routed += 1
+
+    # 3. Admission: wait for a turn at THIS side's model server, or be turned away.
+    admission: Admission = side.admission
     counts = request.app.state.counts
 
     async def wait_for_disconnect() -> None:
@@ -286,7 +373,7 @@ async def chat_completions(request: Request):
         return Response(status_code=499)  # nobody is listening; nothing was sent upstream
 
     # 4. Forward. From here on, every path must release the slot exactly once.
-    upstream: UpstreamClient = request.app.state.upstream
+    upstream: UpstreamClient = side.upstream
     try:
         resp = await upstream.open("/v1/chat/completions", body)
     except (TimeoutError, aiohttp.ClientError, httpx.HTTPError, OSError):

@@ -1,4 +1,6 @@
-# The gateway's dev stack (built in Week 3): gateway -> fake model server, with Redis for rate limiting.
+# The gateway's dev stack (built in Week 3): gateway -> fake model servers, with Redis for rate limiting.
+# Week 6: two fake model servers, blue (`fake`) and green (`fake-green`). The gateway starts all blue; move traffic
+# with:  curl -X POST -H "X-Admin-Token: dev-token" -d '{"green": 10}' localhost:8080/admin/traffic
 #
 #   docker compose up -d --build --wait   build, start, and wait until every service is healthy
 #   docker compose ps                     every STATUS should read "healthy"
@@ -29,8 +31,26 @@ services:
     image: gateway:dev
     command: ["uvicorn", "gateway.fake_upstream:app", "--host", "0.0.0.0", "--port", "9000"]
     environment:
+      FAKE_NAME: blue # answers say "model": "blue", so you can see which side served a request
       FAKE_CHUNKS: "20"
       FAKE_CHUNK_DELAY: "0.02"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  fake-green:
+    # The same image again, named green: the "new version" Blue/Green moves traffic to.
+    image: gateway:dev
+    command: ["uvicorn", "gateway.fake_upstream:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      FAKE_NAME: green
+      FAKE_CHUNKS: "20"
+      FAKE_CHUNK_DELAY: "0.02"
+    depends_on:
+      fake:
+        condition: service_started # fake builds gateway:dev; this one only reuses it
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
       interval: 2s
@@ -44,7 +64,10 @@ services:
     environment:
       # Service names, not localhost: inside a container, localhost is the container itself.
       REDIS_URL: redis://redis:6379
-      UPSTREAM_URL: http://fake:9000
+      UPSTREAM_URL: http://fake:9000 # blue
+      GREEN_URL: http://fake-green:9000
+      TRAFFIC_GREEN: "0" # start all blue
+      ADMIN_TOKEN: dev-token # local only; a real deployment reads it from a secret
       MAX_IN_FLIGHT: "1"
       MAX_QUEUE: "2"
       RATE_LIMIT_CAPACITY: "10"
@@ -54,4 +77,6 @@ services:
       redis:
         condition: service_healthy
       fake:
+        condition: service_healthy
+      fake-green:
         condition: service_healthy

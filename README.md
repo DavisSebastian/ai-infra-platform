@@ -9,6 +9,7 @@ Hands-on path from backend engineering into AI infrastructure / LLM serving, bui
 | 3 | The gateway: streaming proxy, Redis rate limiting, backpressure | [week03-gateway](week03-gateway/), [gateway](gateway/) |
 | 4 | C++ prompt cleaner (pybind11) inside the gateway | [week04-cpp-cleaner](week04-cpp-cleaner/) |
 | 5 | MLflow model registry: promotion gate, rollback, gateway reload | [week05-mlflow-registry](week05-mlflow-registry/) |
+| 6 | Blue/Green model servers: traffic split, switch under load with 0 failed requests | [week06-blue-green](week06-blue-green/) |
 
 Write-ups with diagrams: [davissebastian.github.io/ai-infra-platform](https://davissebastian.github.io/ai-infra-platform/).
 

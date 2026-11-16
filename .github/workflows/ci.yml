@@ -195,3 +195,35 @@ jobs:
         run: |
           cat gateway.log || true
           (cd week05-mlflow-registry && docker compose logs --tail 50)
+
+  test-week06:
+    # Test the DEPLOY, not just the code: steady streaming traffic through the real gateway while it switches
+    # model servers. Unit tests can't show what users see during a switch; only real traffic through a real switch can.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # The gateway package; the benchmark starts its own fake model servers and gateway on free ports.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve
+
+      - name: Blue/Green switch under load fails no request
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode bluegreen --max-failed 0
+
+      - name: Canary (10, 50, 100 percent) under load fails no request
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode canary --max-failed 0
+
+      # The control: the same tool must SEE the outage a restart causes. Without this, a benchmark broken in a way
+      # that always reports 0 failures would make the two checks above pass while measuring nothing.
+      - name: Control - a naive restart under load does fail requests
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode naive --min-failed 1

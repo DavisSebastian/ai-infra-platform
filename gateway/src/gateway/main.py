@@ -6,6 +6,8 @@ GET  /health
 POST /admin/reload          Week 5: re-read the `champion` card from the MLflow registry (needs X-Admin-Token)
 POST /admin/traffic         Week 6: set the Blue/Green split, e.g. {"green": 10} (needs X-Admin-Token)
 
+Week 7: with DRIFT_LOG=1, every forwarded request is also recorded to a Redis stream for the drift check.
+
 Run:  UPSTREAM_URL=http://localhost:9000 uv run uvicorn gateway.main:app --port 8080
 """
 
@@ -17,7 +19,8 @@ import math
 import os
 import random
 import secrets
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 import aiohttp
@@ -30,6 +33,7 @@ from fastapi.responses import StreamingResponse
 from gateway.admission import Admission, ClientGone, Rejected
 from gateway.champion import CHAMPION, ChampionError, ServingCard, apply_card, resolve_champion
 from gateway.redis_limiter import RedisTokenBucket
+from gateway.request_log import Finished, RequestLog
 from gateway.router import BLUE, GREEN, TrafficSplit, choose, split_from_env
 from gateway.sanitize import clean_body
 from gateway.upstream import UpstreamClient, make_client
@@ -74,6 +78,12 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 # Blue/Green (Week 6). Blue is UPSTREAM_URL. GREEN_URL unset = one model server only, as in Weeks 3-5.
 GREEN_URL = os.getenv("GREEN_URL")
 TRAFFIC_GREEN = os.getenv("TRAFFIC_GREEN")  # starting percent of requests sent to green; unset = 0
+
+# Request log for drift detection (Week 7). Off by default: records hold prompt and answer text.
+DRIFT_LOG = os.getenv("DRIFT_LOG", "0") == "1"
+DRIFT_STREAM = os.getenv("DRIFT_STREAM", "gateway:requests")
+DRIFT_STREAM_MAXLEN = int(os.getenv("DRIFT_STREAM_MAXLEN", "10000"))  # newest N records kept
+CAPTURE_LIMIT = 64 * 1024  # bytes of each answer kept for the log: bounds memory per request
 
 
 @dataclass
@@ -166,7 +176,14 @@ async def lifespan(app: FastAPI):
     app.state.rate_limit_fail_open = 0  # how many requests were let through UNCHECKED because Redis failed
     app.state.counts = {"overloaded": 0, "queue_timeout": 0, "client_gone": 0, "upstream_error": 0}
     app.state.cleaning = {"requests_changed": 0, "chars_removed": 0}
+    # The request log shares the rate limiter's Redis client and its timeouts. Its writer is a background task.
+    app.state.request_log = RequestLog(app.state.redis, DRIFT_STREAM, DRIFT_STREAM_MAXLEN) if DRIFT_LOG else None
+    writer = asyncio.create_task(app.state.request_log.run()) if app.state.request_log else None
     yield
+    if writer:
+        writer.cancel()
+        with suppress(asyncio.CancelledError):
+            await writer
     await app.state.redis.aclose()
     for side in app.state.sides.values():
         await side.upstream.aclose()
@@ -196,6 +213,7 @@ async def health(request: Request):
         "queued": sum(s.admission.queued for s in sides),
         "rejected": request.app.state.counts,
         "cleaning": request.app.state.cleaning,
+        "request_log": request.app.state.request_log.counts if request.app.state.request_log else "off",
         "upstream": UPSTREAM_URL,
         "client": PROXY_CLIENT,
         "registry": registry_status(request.app),
@@ -412,6 +430,8 @@ async def chat_completions(request: Request):
 
     # 4. Forward. From here on, every path must release the slot exactly once.
     upstream: UpstreamClient = side.upstream
+    request_log: RequestLog | None = request.app.state.request_log
+    opened = time.monotonic()
     try:
         resp = await upstream.open("/v1/chat/completions", body)
     except (TimeoutError, aiohttp.ClientError, httpx.HTTPError, OSError):
@@ -429,16 +449,34 @@ async def chat_completions(request: Request):
         finally:
             await resp.close()
             slot.release()
+        if request_log:
+            ms = 1000 * (time.monotonic() - opened)
+            request_log.record(Finished(side.name, card and card.version, resp.status, body, b"", None, ms, True))
         return Response(content=data, status_code=resp.status, media_type=resp.content_type)
+
+    # For the request log: a copy of the answer and the timings, taken as the bytes go past. The bytes themselves
+    # are relayed untouched; nothing is parsed here (the log's background writer does that, after the response).
+    captured = bytearray()
+    timing = {"first": None, "completed": False}
 
     async def relay():
         async for data in resp.chunks():
+            if timing["first"] is None:
+                timing["first"] = time.monotonic()
+            if request_log and len(captured) < CAPTURE_LIMIT:
+                captured.extend(data[: CAPTURE_LIMIT - len(captured)])
             yield data
+        timing["completed"] = True
 
     async def cleanup():
         # Normal end: connection returns to the pool. Client left mid-stream: connection is dropped (stops upstream).
         await resp.close()
         slot.release()
+        if request_log:  # after the slot is released, and record() never waits, so logging can't hold anything up
+            now = time.monotonic()
+            ttft = None if timing["first"] is None else 1000 * (timing["first"] - opened)
+            request_log.record(Finished(side.name, card and card.version, 200, body, bytes(captured), ttft,
+                                        1000 * (now - opened), timing["completed"]))  # fmt: skip
 
     # Streaming or not, the bytes are relayed as they arrive; the upstream's Content-Type says which it was.
     return GuardedStreamingResponse(

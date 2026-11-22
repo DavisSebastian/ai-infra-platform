@@ -64,6 +64,21 @@ week05 = [
     "accelerate>=0.34",
 ]
 
+week07-drift = [
+    # The drift check WITHOUT the embedding model: Evidently's statistics, run on precomputed or stand-in
+    # embeddings. CI installs just this (no torch), the same split as week05-registry.
+    "evidently==0.7.23",
+    # Upper bound on purpose: Evidently 0.7.23 imports a pandas internal (infer_dtype_from_object) that pandas 3
+    # removed, so with pandas 3.x `import evidently` crashes. Lift this only after an Evidently release fixes it.
+    "pandas>=2.2,<3",
+    "pyarrow>=17",  # parquet files for the baseline and the captured windows
+]
+week07 = [
+    {include-group = "week07-drift"},
+    # Turns prompts into embeddings (all-MiniLM-L6-v2: 384 numbers per sentence, ~90 MB, runs on CPU).
+    "sentence-transformers==6.3.0",
+]
+
 [tool.uv.sources]
 promptclean = { path = "week04-cpp-cleaner" }
 gateway = { path = "gateway", editable = true }  # editable: code edits apply without reinstalling

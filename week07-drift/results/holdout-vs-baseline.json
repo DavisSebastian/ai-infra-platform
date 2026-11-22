@@ -1,0 +1,48 @@
+{
+  "n_reference": 150,
+  "n_current": 150,
+  "checks": [
+    {
+      "feature": "prompt_words",
+      "kind": "input",
+      "method": "K-S p_value",
+      "score": 0.725,
+      "drifted": false
+    },
+    {
+      "feature": "prompt_embedding",
+      "kind": "input",
+      "method": "model ROC AUC",
+      "score": 0.5059,
+      "drifted": false
+    },
+    {
+      "feature": "answer_words",
+      "kind": "output",
+      "method": "K-S p_value",
+      "score": 0.6279,
+      "drifted": false
+    },
+    {
+      "feature": "ttft_ms",
+      "kind": "output",
+      "method": "K-S p_value",
+      "score": 0.4425,
+      "drifted": false
+    },
+    {
+      "feature": "answer_empty",
+      "kind": "output",
+      "method": "Z-test p_value",
+      "score": 1.0,
+      "drifted": false
+    },
+    {
+      "feature": "refusal",
+      "kind": "output",
+      "method": "Z-test p_value",
+      "score": 1.0,
+      "drifted": false
+    }
+  ]
+}

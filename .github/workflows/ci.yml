@@ -227,3 +227,26 @@ jobs:
       # that always reports 0 failures would make the two checks above pass while measuring nothing.
       - name: Control - a naive restart under load does fail requests
         run: uv run python week06-blue-green/scripts/switch_bench.py --mode naive --min-failed 1
+
+  test-week07:
+    # The drift checks on the committed baseline window, with a stand-in embedding (no model download, no torch).
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # week07-drift, not week07: Evidently without sentence-transformers (torch). CI only runs the statistics.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week07-drift
+
+      - name: Run Week 7 drift tests
+        run: uv run pytest -v week07-drift/tests

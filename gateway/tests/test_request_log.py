@@ -10,7 +10,7 @@ import gateway.main as gateway
 import httpx
 import pytest
 import redis.asyncio as redis
-from gateway.request_log import Finished, RequestLog, answer_of, prompt_of
+from gateway.request_log import Finished, RequestLog, answer_of, first_token_ms, prompt_of
 
 CHAT = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}
 
@@ -62,6 +62,27 @@ def test_answer_of_junk_is_empty(raw):
     assert answer_of(raw) == ""
 
 
+# --- Time to first token: the first event with TEXT, not the first chunk ---------------------------------
+
+
+def test_first_token_is_the_first_text_event_not_the_role_event():
+    raw = sse("Canberra", " is the capital.")
+    role_end = raw.index(b"\n\n") + 2  # the role-only event, which servers send before generating anything
+    text_end = raw.index(b"Canberra") + 40
+    arrivals = [(role_end, 2.0), (text_end, 180.0), (len(raw), 400.0)]
+    assert first_token_ms(raw, arrivals) == 180.0  # not 2.0: that would be time to first BYTE
+
+
+def test_first_token_when_one_chunk_holds_several_events():
+    raw = sse("Canberra")
+    assert first_token_ms(raw, [(len(raw), 95.0)]) == 95.0
+
+
+@pytest.mark.parametrize("raw", [sse(), b'{"choices": [{"message": {"content": "plain JSON"}}]}', b""])
+def test_no_first_token_without_streamed_text(raw):
+    assert first_token_ms(raw, [(len(raw), 5.0)]) is None
+
+
 # --- The writer: never blocks, never raises ---------------------------------------------------------------
 
 
@@ -77,8 +98,11 @@ class FakeRedis:
 
 
 def finished(**kw) -> Finished:
-    defaults = dict(side="blue", card="2", status=200, body=json.dumps(CHAT).encode(), answer=sse("w0 ", "w1"),
-                    ttft_ms=12.34, ms=56.78, completed=True)  # fmt: skip
+    raw = sse("w0 ", "w1")
+    first_text_end = raw.index(b"w0") + 30  # somewhere after the first text event's line ends
+    defaults = dict(side="blue", card="2", status=200, body=json.dumps(CHAT).encode(), answer=raw,
+                    arrivals=[(10, 1.04), (first_text_end, 12.34), (len(raw), 50.0)], ms=56.78,
+                    completed=True)  # fmt: skip
     return Finished(**{**defaults, **kw})
 
 
@@ -101,7 +125,7 @@ async def test_the_writer_stores_one_parsed_record_per_request():
     e = fake.entries[0]
     assert (e["stream"], e["maxlen"]) == ("gateway:requests", 10_000)
     assert (e["side"], e["card"], e["status"], e["completed"]) == ("blue", "2", 200, True)
-    assert (e["prompt"], e["answer"], e["ttft_ms"], e["ms"]) == ("hi", "w0 w1", 12.3, 56.8)
+    assert (e["prompt"], e["answer"], e["first_byte_ms"], e["ttft_ms"], e["ms"]) == ("hi", "w0 w1", 1.0, 12.3, 56.8)
     assert rl.counts["written"] == 1
 
 
@@ -156,7 +180,7 @@ async def test_a_streamed_request_is_recorded(logging_gateway, real_redis_url, s
     [e] = await entries(real_redis_url, stream_name, 1)
     assert (e["side"], e["status"], e["completed"], e["prompt"], e["answer"]) == ("blue", 200, True, "hi", "w0 w1 ")
     assert e["card"] is None  # registry off
-    assert 0 < e["ttft_ms"] <= e["ms"]
+    assert 0 < e["first_byte_ms"] <= e["ttft_ms"] <= e["ms"]
 
 
 async def test_a_plain_json_request_is_recorded(logging_gateway, real_redis_url, stream_name):

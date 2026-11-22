@@ -42,9 +42,35 @@ class Finished:
     status: int
     body: bytes  # the request body as forwarded (after cleaning and the card)
     answer: bytes  # the response bytes as relayed, possibly cut at the capture limit
-    ttft_ms: float | None  # gateway-side: upstream opened -> first chunk relayed
+    arrivals: list[tuple[int, float]]  # per chunk: (bytes captured so far, ms since the upstream was opened)
     ms: float  # upstream opened -> response finished
     completed: bool  # False if the client left mid-stream
+
+
+def first_token_ms(raw: bytes, arrivals: list[tuple[int, float]]) -> float | None:
+    """When the first event carrying actual TEXT arrived (ms since the upstream was opened). None if none did.
+
+    Not the first chunk: servers typically send a role-only event ({"role": "assistant", "content": ""}) the moment
+    they start, before the model has produced anything. Timing that measures time to first BYTE (about 2 ms with the
+    Week 2 server), which stays flat however slow the model is, so it would be useless as a drift signal.
+    """
+    offset = 0
+    for line in raw.split(b"\n"):
+        line_end = offset + len(line)
+        offset = line_end + 1
+        if not (line.startswith(b"data: {") and _carries_text(line)):
+            continue
+        for captured, ms in arrivals:
+            if captured >= line_end:  # the chunk that completed this line
+                return ms
+    return None
+
+
+def _carries_text(line: bytes) -> bool:
+    try:
+        return bool(json.loads(line[len(b"data: ") :])["choices"][0]["delta"].get("content"))
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 def prompt_of(body: bytes) -> str:
@@ -79,6 +105,10 @@ def answer_of(raw: bytes) -> str:
         return _text(json.loads(text)["choices"][0]["message"]["content"])
     except (ValueError, KeyError, IndexError, TypeError):
         return ""
+
+
+def _round(ms: float | None) -> float | None:
+    return None if ms is None else round(ms, 1)
 
 
 def _text(content) -> str:
@@ -127,7 +157,8 @@ class RequestLog:
             "card": f.card,
             "status": f.status,
             "completed": f.completed,
-            "ttft_ms": None if f.ttft_ms is None else round(f.ttft_ms, 1),
+            "first_byte_ms": round(f.arrivals[0][1], 1) if f.arrivals else None,
+            "ttft_ms": _round(first_token_ms(f.answer, f.arrivals)),  # None for a non-streamed (JSON) answer
             "ms": round(f.ms, 1),
             "prompt": prompt_of(f.body),
             "answer": answer_of(f.answer) if f.status == 200 else "",

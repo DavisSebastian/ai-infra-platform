@@ -451,20 +451,20 @@ async def chat_completions(request: Request):
             slot.release()
         if request_log:
             ms = 1000 * (time.monotonic() - opened)
-            request_log.record(Finished(side.name, card and card.version, resp.status, body, b"", None, ms, True))
+            request_log.record(Finished(side.name, card and card.version, resp.status, body, b"", [], ms, True))
         return Response(content=data, status_code=resp.status, media_type=resp.content_type)
 
     # For the request log: a copy of the answer and the timings, taken as the bytes go past. The bytes themselves
     # are relayed untouched; nothing is parsed here (the log's background writer does that, after the response).
     captured = bytearray()
-    timing = {"first": None, "completed": False}
+    arrivals: list[tuple[int, float]] = []  # per chunk: (bytes captured so far, ms since opened); the writer finds
+    timing = {"completed": False}  # which chunk carried the first real text, so nothing is parsed here
 
     async def relay():
         async for data in resp.chunks():
-            if timing["first"] is None:
-                timing["first"] = time.monotonic()
             if request_log and len(captured) < CAPTURE_LIMIT:
                 captured.extend(data[: CAPTURE_LIMIT - len(captured)])
+                arrivals.append((len(captured), 1000 * (time.monotonic() - opened)))
             yield data
         timing["completed"] = True
 
@@ -473,10 +473,8 @@ async def chat_completions(request: Request):
         await resp.close()
         slot.release()
         if request_log:  # after the slot is released, and record() never waits, so logging can't hold anything up
-            now = time.monotonic()
-            ttft = None if timing["first"] is None else 1000 * (timing["first"] - opened)
-            request_log.record(Finished(side.name, card and card.version, 200, body, bytes(captured), ttft,
-                                        1000 * (now - opened), timing["completed"]))  # fmt: skip
+            request_log.record(Finished(side.name, card and card.version, 200, body, bytes(captured), arrivals,
+                                        1000 * (time.monotonic() - opened), timing["completed"]))  # fmt: skip
 
     # Streaming or not, the bytes are relayed as they arrive; the upstream's Content-Type says which it was.
     return GuardedStreamingResponse(

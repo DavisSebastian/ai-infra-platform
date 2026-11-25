@@ -1,0 +1,104 @@
+{
+  "vs_baseline": {
+    "n_reference": 150,
+    "n_current": 73,
+    "checks": [
+      {
+        "feature": "prompt_words",
+        "kind": "input",
+        "method": "K-S p_value",
+        "score": 0.3765,
+        "drifted": false
+      },
+      {
+        "feature": "prompt_embedding",
+        "kind": "input",
+        "method": "model ROC AUC",
+        "score": 0.543,
+        "drifted": false
+      },
+      {
+        "feature": "answer_words",
+        "kind": "output",
+        "method": "K-S p_value",
+        "score": 0.8234,
+        "drifted": false
+      },
+      {
+        "feature": "ttft_ms",
+        "kind": "output",
+        "method": "K-S p_value, median +1%",
+        "score": 0.0244,
+        "drifted": false
+      },
+      {
+        "feature": "answer_empty",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      },
+      {
+        "feature": "refusal",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      }
+    ]
+  },
+  "vs_control": {
+    "n_reference": 77,
+    "n_current": 73,
+    "checks": [
+      {
+        "feature": "prompt_words",
+        "kind": "input",
+        "method": "K-S p_value",
+        "score": 0.8837,
+        "drifted": false
+      },
+      {
+        "feature": "prompt_embedding",
+        "kind": "input",
+        "method": "model ROC AUC",
+        "score": 0.4666,
+        "drifted": false
+      },
+      {
+        "feature": "answer_words",
+        "kind": "output",
+        "method": "K-S p_value",
+        "score": 0.8522,
+        "drifted": false
+      },
+      {
+        "feature": "ttft_ms",
+        "kind": "output",
+        "method": "K-S p_value, median +2%",
+        "score": 0.2051,
+        "drifted": false
+      },
+      {
+        "feature": "answer_empty",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      },
+      {
+        "feature": "refusal",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      }
+    ]
+  },
+  "verdict": {
+    "level": "ok",
+    "reasons": [
+      "no drift vs the baseline or the control"
+    ]
+  }
+}

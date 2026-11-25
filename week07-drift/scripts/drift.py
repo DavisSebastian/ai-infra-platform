@@ -13,7 +13,7 @@ statistical test. Evidently picks the test and runs it:
   output  answer_words      the answer        K-S                                 p < 0.05
   output  answer_empty      the answer        Z-test of proportions               p < 0.05
   output  refusal           the answer        Z-test of proportions               p < 0.05
-  output  ttft_ms           the timing        K-S                                 p < 0.05
+  output  ttft_ms           the timing        K-S                                 p < 0.05 AND median moves >= 20%
 
 Input drift means the USERS changed (what they ask). Output drift means the ANSWERS changed. Only output drift that
 isn't explained by input drift points at the model; deciding that is decide()'s job, not this module's.
@@ -22,6 +22,11 @@ Why bootstrap for the embeddings: Evidently's default calls drift when AUC > 0.5
 the normal prompts (no drift by construction), that rule raised a false alarm 11% of the time at 150 vs 150 records;
 the bootstrap rule (AUC must beat 95% of AUCs from random labels at this sample size) raised one 6% of the time.
 Calibrate a detector on your own no-drift data before trusting its defaults.
+
+Why TTFT also needs a minimum effect size: a p-value says a difference is real, not that it matters. TTFT is tightly
+clustered, so the same model on the same Mac three days later (median 33.6 -> 34.2 ms, +1.8%) gave K-S p < 0.0001.
+Latency depends on the machine as well as the model. A genuinely different model moved it far more (Week 5: 69 vs
+116 ms, +68%), so TTFT counts as drifted only when K-S fires AND the median moves by at least 20%.
 
 The embedding function is passed in (dependency injection again): minilm() for real runs, hashing() for CI, which
 needs no model download and no torch.
@@ -46,6 +51,9 @@ EMBEDDING = "prompt_embedding"
 
 # How refusals usually start. Crude on purpose: a keyword check catches "the model started refusing", not subtle
 # quality loss. Measuring quality properly needs labels or an LLM judge, which is out of scope here.
+# Practical significance: a statistically clear but tiny change is not drift. Fraction of the reference median.
+MIN_MEDIAN_SHIFT = {"ttft_ms": 0.20}
+
 REFUSAL = re.compile(r"^\s*(i'?m sorry|i am sorry|sorry,|i can'?t|i cannot|i'?m unable|i am unable|as an ai)", re.I)
 
 
@@ -140,6 +148,11 @@ def compare(reference: pd.DataFrame, current: pd.DataFrame, embed: Embed, html: 
             # A p-value is "how likely is a difference this big by chance": small means drift. A distance (used for
             # large samples) is "how different": big means drift.
             drifted = value < config["threshold"] if "p_value" in test else value >= config["threshold"]
+            if name in MIN_MEDIAN_SHIFT:
+                before, after = ref[name].median(), cur[name].median()
+                shift = abs(after - before) / before if before else float("inf")
+                drifted = drifted and shift >= MIN_MEDIAN_SHIFT[name]
+                test += f", median {shift:+.0%}" if before else ""
             checks.append(Check(name, kind_of[name], test, round(value, 4), bool(drifted)))
     # The report gives the embeddings' AUC but not the bootstrap's yes/no, so ask the method directly. It is
     # deterministic (fixed random seeds), so it computes the same AUC the report shows.

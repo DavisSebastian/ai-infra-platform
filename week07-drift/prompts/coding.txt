@@ -1,0 +1,153 @@
+# Scenario B, "the users changed": programming questions, a different kind of traffic from normal.txt.
+# Sent to both sides during a canary, it should be INPUT drift vs the baseline but NOT a difference between blue and
+# green (both get the same users), so the verdict must be a warning, not an alert.
+How do I reverse a list in Python?
+What is the difference between a list and a tuple in Python?
+How do I read a file line by line in Python?
+What does the yield keyword do in Python?
+How do I sort a dictionary by value in Python?
+What is a lambda function in Python?
+How do I handle exceptions in Python?
+What is a virtual environment in Python?
+How do I remove duplicates from a list in Python?
+What is the difference between == and is in Python?
+How do I merge two dictionaries in Python?
+What are Python decorators?
+How do I convert a string to an integer in Python?
+What is list comprehension in Python?
+How do I check if a key exists in a dictionary?
+What is the GIL in Python?
+How do I write a class in Python?
+What does __init__ do in Python?
+How do I format a string with f-strings?
+How do I install a package with pip?
+What is the difference between a process and a thread?
+What is a race condition?
+What is a deadlock?
+What is a mutex?
+What is the difference between concurrency and parallelism?
+How does garbage collection work in Java?
+What is the difference between an interface and an abstract class in Java?
+What is a NullPointerException?
+How do I create a thread in Java?
+What is the difference between HashMap and TreeMap?
+What is dependency injection?
+What does the final keyword mean in Java?
+How do Java streams work?
+What is the difference between checked and unchecked exceptions?
+What is a Spring Boot starter?
+What is the JVM?
+How do I compare strings in Java?
+What is a Java record?
+What is the difference between ArrayList and LinkedList?
+What is an Optional in Java?
+How do I center a div with CSS?
+What is the difference between let, const and var in JavaScript?
+What is a promise in JavaScript?
+How does async/await work in JavaScript?
+What is the DOM?
+What is the difference between null and undefined in JavaScript?
+How do I add an event listener in JavaScript?
+What is a closure in JavaScript?
+What is React?
+What is the virtual DOM?
+What is TypeScript?
+How do I make an HTTP request in JavaScript?
+What is CSS flexbox?
+What is CSS grid?
+What is a callback function?
+Write a SQL query to select all rows from a table
+What is the difference between INNER JOIN and LEFT JOIN?
+What is a primary key?
+What is a foreign key?
+What is database normalization?
+What is an index in a database?
+How do I find duplicate rows in SQL?
+What is a transaction in a database?
+What does ACID mean in databases?
+What is the difference between SQL and NoSQL?
+How do I count rows in SQL?
+What is a SQL view?
+What is GROUP BY in SQL?
+What is a database deadlock?
+What is sharding?
+What is Git?
+How do I undo the last commit in Git?
+What is the difference between git merge and git rebase?
+How do I create a new branch in Git?
+What is a pull request?
+How do I resolve a merge conflict?
+What does git stash do?
+What is the difference between git fetch and git pull?
+How do I see the commit history in Git?
+What is a .gitignore file?
+What is Docker?
+What is the difference between a Docker image and a container?
+What is a Dockerfile?
+What is Kubernetes?
+What is a Kubernetes pod?
+What is CI/CD?
+What is a REST API?
+What is the difference between GET and POST?
+What does HTTP status 404 mean?
+What does HTTP status 500 mean?
+What is JSON?
+What is GraphQL?
+What is a microservice?
+What is a load balancer?
+What is caching?
+What is Redis used for?
+What is a message queue?
+What is Kafka?
+What is an API gateway?
+What is rate limiting?
+What is Big O notation?
+What is a binary search?
+What is a hash table?
+What is a linked list?
+What is a stack?
+What is a queue?
+What is recursion?
+What is dynamic programming?
+What is a binary tree?
+What is a graph in computer science?
+What is the time complexity of quicksort?
+What is merge sort?
+What is breadth-first search?
+What is depth-first search?
+What is a heap?
+Write a function to check if a string is a palindrome
+Write a function to find the maximum value in an array
+Write a function to compute the factorial of a number
+Write a function to reverse a string
+Write a function to check if a number is prime
+Write a function that returns the Fibonacci sequence
+Write a function to count vowels in a string
+Write a function to find the second largest number in a list
+Write a function to flatten a nested list
+Write a function to check if two strings are anagrams
+What is unit testing?
+What is test-driven development?
+What is a mock in testing?
+What is integration testing?
+What is code coverage?
+What is a linter?
+What is refactoring?
+What is technical debt?
+What is a design pattern?
+What is the singleton pattern?
+What is the factory pattern?
+What is the observer pattern?
+What is SOLID in software design?
+What is object-oriented programming?
+What is functional programming?
+What is a compiler?
+What is an interpreter?
+What is a memory leak?
+What is a stack overflow error?
+What is an API key?
+What is OAuth?
+What is a JWT?
+What is HTTPS and how does TLS work?
+What is SQL injection?
+What is cross-site scripting?

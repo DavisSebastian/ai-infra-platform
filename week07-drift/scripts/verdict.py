@@ -61,8 +61,9 @@ def decide(vs_baseline: DriftResult, vs_control: DriftResult | None = None, min_
         if vs_blue:
             return Verdict(WARN, (f"one output check differs from the control (blue), unconfirmed: {vs_blue}",))
         if inputs or outputs:
-            return Verdict(WARN, (f"drift vs the baseline, but the control (blue) shows it too: the users changed "
-                                  f"(input {inputs}, output {outputs})",))  # fmt: skip
+            reason = (f"drift vs the baseline, but the control (blue) shows it too: the users or the environment "
+                      f"changed, not green's model (input {inputs}, output {outputs})")  # fmt: skip
+            return Verdict(WARN, (reason,))
         return Verdict(OK, ("no drift vs the baseline or the control",))
 
     # 3. One model server: no control group, so input drift explains output drift.

@@ -9,6 +9,10 @@
     # canary analysis: green vs the baseline AND green vs blue over the same period (blue is the control group)
     uv run python week07-drift/scripts/drift_check.py --stream-last 150 --side green --against-side blue
 
+    # the same, from a saved window that holds both sides' records (as capture.py saves them)
+    uv run python week07-drift/scripts/drift_check.py --current week07-drift/data/scenario-c.parquet \
+        --side green --against-side blue
+
 It ends with decide()'s verdict: insufficient_data / ok / warn / alert (Week 8 rolls back on alert).
 The reference defaults to week07-drift/data/baseline.parquet. --html saves Evidently's report (histograms of every
 feature, reference vs current); --json saves the numbers for other tools (Week 8's rollback reads these).
@@ -61,15 +65,16 @@ def main() -> None:
     parser.add_argument("--json", type=Path, help="save the result as JSON here")
     args = parser.parse_args()
 
-    if args.current:
-        current = pd.read_parquet(args.current)
-        if args.side:
-            current = current[current["side"] == args.side]
+    control = None
+    if args.current:  # a saved window: blue and green records are both in it, as the gateway logged them
+        saved = pd.read_parquet(args.current)
+        current = saved[saved["side"] == args.side] if args.side else saved
+        if args.against_side:
+            control = saved[saved["side"] == args.against_side]
     else:
         current = from_stream(args.redis, args.stream, args.side, args.stream_last)
-    control = None
-    if args.against_side:
-        control = from_stream(args.redis, args.stream, args.against_side, args.stream_last or len(current))
+        if args.against_side:
+            control = from_stream(args.redis, args.stream, args.against_side, args.stream_last)
     smallest = min(len(current), len(control) if control is not None else len(current))
     if smallest < args.min_records:  # e.g. green just deployed: judge nothing yet rather than crash or guess
         print(f"\nVERDICT: {INSUFFICIENT.upper()}\n  - smallest window has {smallest} records; need {args.min_records}")
@@ -97,9 +102,9 @@ def main() -> None:
 
 def show(title: str, result: DriftResult) -> None:
     print(f"\n{title}  (reference {result.n_reference}, current {result.n_current})")
-    print(f"  {'check':<18} {'kind':<7} {'method':<16} {'score':>8}  drift?")
+    print(f"  {'check':<18} {'kind':<7} {'method':<26} {'score':>8}  drift?")
     for c in result.checks:
-        print(f"  {c.feature:<18} {c.kind:<7} {c.method:<16} {c.score:>8.4f}  {'YES' if c.drifted else 'no'}")
+        print(f"  {c.feature:<18} {c.kind:<7} {c.method:<26} {c.score:>8.4f}  {'YES' if c.drifted else 'no'}")
 
 
 if __name__ == "__main__":

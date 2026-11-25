@@ -47,13 +47,14 @@ async def send(session: aiohttp.ClientSession, url: str, prompt: str, max_tokens
         return r.status
 
 
-async def collect(client: redis.Redis, stream: str, since: str, prompts: set[str], timeout: float) -> list[dict]:
+async def collect(client: redis.Redis, stream: str, since: str, prompts: set[str], expected: int,
+                  timeout: float) -> list[dict]:  # fmt: skip
     """The records logged since `since` for these prompts. The gateway's writer is asynchronous, so wait for them."""
     deadline = time.monotonic() + timeout
     while True:
         rows = [json.loads(f[b"data"]) for _, f in await client.xrange(stream, min=since)]
         mine = [r for r in rows if r["prompt"] in prompts]
-        if len(mine) >= len(prompts) or time.monotonic() > deadline:
+        if len(mine) >= expected or time.monotonic() > deadline:
             return mine
         await asyncio.sleep(0.2)
 
@@ -70,6 +71,8 @@ async def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=200, help="the card's max_tokens caps this anyway")
     args = parser.parse_args()
 
+    # Each prompt once, on purpose: repeated prompts inflate the embedding check. The same prompt lands in both the
+    # classifier's training and test halves, so it memorizes "this one is current" (measured: AUC 0.51 -> 0.68).
     prompts = load_prompts(args.prompts, args.split)
     client = redis.from_url(args.redis)
     since = f"{int(time.time() * 1000)}-0"  # stream IDs start with a millisecond timestamp
@@ -86,7 +89,7 @@ async def main() -> None:
     timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         await asyncio.gather(*(one(session, i, p) for i, p in enumerate(prompts)))
-    records = await collect(client, args.stream, since, set(prompts), timeout=30)
+    records = await collect(client, args.stream, since, set(prompts), len(prompts), timeout=30)
     await client.aclose()
 
     window = pd.DataFrame(records)

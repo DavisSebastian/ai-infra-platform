@@ -1,0 +1,12 @@
+answer words, median: baseline 18, blue (v1) 18, green (v3) 6
+
+           green requests   alert raised (card v3)  false alarm (no change)      total at 10% canary
+                        5                      24%                       0%                       50
+                       10                      66%                       0%                      100
+                       15                      94%                       0%                      150
+                       20                     100%                       0%                      200
+                       25                     100%                       0%                      250
+                       30                     100%                       0%                      300
+                       40                     100%                       0%                      400
+                       50                     100%                       0%                      500
+                       60                     100%                       0%                      600

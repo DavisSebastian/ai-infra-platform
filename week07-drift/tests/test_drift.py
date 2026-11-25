@@ -104,6 +104,13 @@ def test_empty_answers_are_output_drift(baseline, embed):
     assert "answer_empty" in compare(baseline, current, embed).drifted("output")
 
 
+def test_a_tiny_but_statistically_clear_latency_shift_is_not_drift(baseline, embed):
+    current = shuffled(baseline)
+    current["ttft_ms"] = current["ttft_ms"] + 1.0  # +1 ms on ~34 ms: K-S notices, nobody should care
+    check = next(c for c in compare(baseline, current, embed).checks if c.feature == "ttft_ms")
+    assert check.score < 0.05 and not check.drifted
+
+
 def test_a_slower_model_is_output_drift(baseline, embed):
     current = shuffled(baseline)
     current["ttft_ms"] = current["ttft_ms"] * 3

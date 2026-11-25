@@ -10,6 +10,7 @@ Hands-on path from backend engineering into AI infrastructure / LLM serving, bui
 | 4 | C++ prompt cleaner (pybind11) inside the gateway | [week04-cpp-cleaner](week04-cpp-cleaner/) |
 | 5 | MLflow model registry: promotion gate, rollback, gateway reload | [week05-mlflow-registry](week05-mlflow-registry/) |
 | 6 | Blue/Green model servers: traffic split, switch under load with 0 failed requests | [week06-blue-green](week06-blue-green/) |
+| 7 | Drift detection with Evidently: blue as the control group, a silent failure caught in 20 requests | [week07-drift](week07-drift/) |
 
 Write-ups with diagrams: [davissebastian.github.io/ai-infra-platform](https://davissebastian.github.io/ai-infra-platform/).
 

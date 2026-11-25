@@ -6,9 +6,10 @@
     # the live gateway: the last 150 requests green served, straight from the Redis stream
     uv run python week07-drift/scripts/drift_check.py --stream-last 150 --side green
 
-    # canary analysis: green vs blue over the same period (same users, so differences point at the model)
+    # canary analysis: green vs the baseline AND green vs blue over the same period (blue is the control group)
     uv run python week07-drift/scripts/drift_check.py --stream-last 150 --side green --against-side blue
 
+It ends with decide()'s verdict: insufficient_data / ok / warn / alert (Week 8 rolls back on alert).
 The reference defaults to week07-drift/data/baseline.parquet. --html saves Evidently's report (histograms of every
 feature, reference vs current); --json saves the numbers for other tools (Week 8's rollback reads these).
 """
@@ -24,7 +25,8 @@ import redis
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from drift import compare, hashing, minilm  # noqa: E402  (a sibling script, not an installed package)
+from drift import DriftResult, compare, hashing, minilm  # noqa: E402  (a sibling script, not an installed package)
+from verdict import INSUFFICIENT, MIN_RECORDS, decide  # noqa: E402
 
 
 def from_stream(redis_url: str, stream: str, side: str | None, last: int) -> pd.DataFrame:
@@ -50,7 +52,8 @@ def main() -> None:
     source.add_argument("--current", type=Path, help="a saved window (.parquet)")
     source.add_argument("--stream-last", type=int, metavar="N", help="the last N records from the gateway's stream")
     parser.add_argument("--side", help="only records this side served (blue or green)")
-    parser.add_argument("--against-side", help="use the same stream's records for THIS side as the reference")
+    parser.add_argument("--against-side", help="also compare with this side's recent records (the control group)")
+    parser.add_argument("--min-records", type=int, default=MIN_RECORDS, help="smaller windows aren't judged")
     parser.add_argument("--embeddings", choices=["minilm", "hashing"], default="minilm")
     parser.add_argument("--redis", default=os.getenv("REDIS_URL", "redis://localhost:6379"))
     parser.add_argument("--stream", default=os.getenv("DRIFT_STREAM", "gateway:requests"))
@@ -64,26 +67,39 @@ def main() -> None:
             current = current[current["side"] == args.side]
     else:
         current = from_stream(args.redis, args.stream, args.side, args.stream_last)
+    control = None
     if args.against_side:
-        reference = from_stream(args.redis, args.stream, args.against_side, args.stream_last or len(current))
-        ref_name = f"stream, side={args.against_side}"
-    else:
-        reference = pd.read_parquet(args.reference)
-        ref_name = args.reference.name
+        control = from_stream(args.redis, args.stream, args.against_side, args.stream_last or len(current))
+    smallest = min(len(current), len(control) if control is not None else len(current))
+    if smallest < args.min_records:  # e.g. green just deployed: judge nothing yet rather than crash or guess
+        print(f"\nVERDICT: {INSUFFICIENT.upper()}\n  - smallest window has {smallest} records; need {args.min_records}")
+        return
 
     embed = minilm() if args.embeddings == "minilm" else hashing()
-    result = compare(reference, current, embed, html=args.html)
-
     cur_name = args.current.name if args.current else f"stream, side={args.side or 'any'}"
-    print(f"\nreference: {ref_name} ({result.n_reference})   current: {cur_name} ({result.n_current})\n")
+    vs_baseline = compare(pd.read_parquet(args.reference), current, embed, html=args.html)
+    show(f"{cur_name} vs {args.reference.name}", vs_baseline)
+    vs_control = None
+    if control is not None:
+        vs_control = compare(control, current, embed)
+        show(f"{cur_name} vs side={args.against_side} (the control: same users, same period)", vs_control)
+
+    verdict = decide(vs_baseline, vs_control, args.min_records)
+    print(f"\nVERDICT: {verdict.level.upper()}")
+    for reason in verdict.reasons:
+        print(f"  - {reason}")
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        out = {"vs_baseline": vs_baseline.to_dict(), "vs_control": vs_control and vs_control.to_dict(),
+               "verdict": verdict.to_dict()}  # fmt: skip
+        args.json.write_text(json.dumps(out, indent=2))
+
+
+def show(title: str, result: DriftResult) -> None:
+    print(f"\n{title}  (reference {result.n_reference}, current {result.n_current})")
     print(f"  {'check':<18} {'kind':<7} {'method':<16} {'score':>8}  drift?")
     for c in result.checks:
         print(f"  {c.feature:<18} {c.kind:<7} {c.method:<16} {c.score:>8.4f}  {'YES' if c.drifted else 'no'}")
-    print(f"\n  input drift:  {result.drifted('input') or 'none'}")
-    print(f"  output drift: {result.drifted('output') or 'none'}")
-    if args.json:
-        args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(json.dumps(result.to_dict(), indent=2))
 
 
 if __name__ == "__main__":

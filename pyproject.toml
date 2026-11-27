@@ -34,15 +34,8 @@ week02 = [
 ]
 
 week03-serve = [
-    # Everything the Week 3 gateway needs. aiohttp and httpx are both here on purpose: step 1 measures which
-    # one makes the better streaming proxy (the choice is the PROXY_CLIENT env var).
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "anyio>=4",
-    "aiohttp>=3.10",
-    "httpx>=0.27",
-    "redis>=5",  # redis.asyncio: the async client, with a connection pool built in
-    "promptclean",  # week 4: the C++ prompt cleaner (compiled on install; see week04-cpp-cleaner/)
+    # The Week 3 gateway, now its own package in gateway/ (its runtime dependencies live in gateway/pyproject.toml).
+    "gateway",
 ]
 week03 = [
     {include-group = "week03-serve"},
@@ -54,8 +47,41 @@ week04 = [
     "promptclean",
 ]
 
+week05-registry = [
+    # Everything Week 5 needs EXCEPT the model libraries: release.py, the registering half of register.py, and the
+    # CI registry check. CI installs just this (no torch), like week02-serve.
+    # The MLflow server runs in Docker (week05-mlflow-registry/docker-compose.yml). Scripts only talk to it over
+    # HTTP, so the client-only "skinny" package is enough. Pinned to the server's version: client and server
+    # should match.
+    "mlflow-skinny==3.17.2",
+    "pyyaml>=6",
+]
+week05 = [
+    {include-group = "week05-registry"},
+    # register.py runs each card's model locally to score it (same libraries as Week 2).
+    "torch>=2.4",
+    "transformers>=4.45",
+    "accelerate>=0.34",
+]
+
+week07-drift = [
+    # The drift check WITHOUT the embedding model: Evidently's statistics, run on precomputed or stand-in
+    # embeddings. CI installs just this (no torch), the same split as week05-registry.
+    "evidently==0.7.23",
+    # Upper bound on purpose: Evidently 0.7.23 imports a pandas internal (infer_dtype_from_object) that pandas 3
+    # removed, so with pandas 3.x `import evidently` crashes. Lift this only after an Evidently release fixes it.
+    "pandas>=2.2,<3",
+    "pyarrow>=17",  # parquet files for the baseline and the captured windows
+]
+week07 = [
+    {include-group = "week07-drift"},
+    # Turns prompts into embeddings (all-MiniLM-L6-v2: 384 numbers per sentence, ~90 MB, runs on CPU).
+    "sentence-transformers==6.3.0",
+]
+
 [tool.uv.sources]
 promptclean = { path = "week04-cpp-cleaner" }
+gateway = { path = "gateway", editable = true }  # editable: code edits apply without reinstalling
 
 [tool.ruff]
 line-length = 120

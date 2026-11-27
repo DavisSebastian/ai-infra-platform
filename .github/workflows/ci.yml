@@ -52,7 +52,7 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
-  test-week03:
+  test-gateway:
     runs-on: ubuntu-latest
 
     # A service container: GitHub starts Redis next to the job, like the compose file does locally.
@@ -84,13 +84,13 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      # Installs the gateway package (gateway/) and its dependencies, compiling promptclean on the way.
       - name: Install dependencies
         run: uv sync --locked --group dev --group week03-serve
 
-      # Weeks 2 and 3 each have a package named `app`, so they can't share one pytest run:
-      # point pytest at Week 3's folder and import path explicitly.
-      - name: Run Week 3 tests
-        run: uv run pytest -v -o pythonpath=week03-gateway -o testpaths=week03-gateway/tests
+      # The gateway is an installed package now, so `import gateway` works from anywhere: no pythonpath override.
+      - name: Run gateway tests
+        run: uv run pytest -v gateway/tests
 
   test-week04:
     # First build matrix: the same job on Linux (gcc, x86_64) and macOS (clang, arm64). Native code is compiled per
@@ -122,3 +122,170 @@ jobs:
 
       - name: Run Week 4 tests
         run: uv run pytest -v week04-cpp-cleaner/tests
+
+  test-week05:
+    # The model registry against a REAL MLflow + Postgres, started from the same compose file used locally.
+    # Unit tests (with fake registries) run first; then the real server checks that the fakes still tell the truth.
+    runs-on: ubuntu-latest
+
+    env:
+      MLFLOW_TRACKING_URI: http://localhost:5001
+      REGISTRY_MODEL: gateway-llm-ci # its own model name, never the real gateway-llm
+      ADMIN_TOKEN: ci-admin-token # throwaway value for this job only; a real deployment reads it from a secret
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "0" # fail in seconds, not after the client's ~4 minutes of retries
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # week05-registry, not week05: the MLflow client without torch. CI registers cards but doesn't score them.
+      # week03-serve: the gateway package, for resolve_champion() and the end-to-end check.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve --group week05-registry
+
+      - name: Run Week 5 unit tests (release.py rules, fake registry)
+        run: uv run pytest -v week05-mlflow-registry/tests
+
+      - name: Start MLflow + Postgres
+        working-directory: week05-mlflow-registry
+        run: docker compose up -d --build --wait
+
+      - name: Register three cards and promote (v3 has eval=failed and must be refused)
+        run: uv run python week05-mlflow-registry/scripts/ci_registry_check.py seed
+
+      # The point of Postgres + named volumes: records must outlive the containers. `down` without -v keeps volumes.
+      - name: Restart the stack
+        working-directory: week05-mlflow-registry
+        run: |
+          docker compose down
+          docker compose up -d --wait
+
+      - name: Check the champion survived, and the real server's error codes match the fakes
+        run: uv run python week05-mlflow-registry/scripts/ci_registry_check.py verify
+
+      - name: Start the gateway against the registry
+        run: |
+          RATE_LIMIT_ENABLED=0 uv run uvicorn gateway.main:app --port 8080 > gateway.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:8080/health > /dev/null && exit 0; sleep 1; done
+          exit 1
+
+      - name: The gateway serves champion v2
+        run: |
+          curl -s localhost:8080/health | jq .registry
+          test "$(curl -s localhost:8080/health | jq -r .registry.version)" = "2"
+
+      - name: Roll back in the registry, reload the gateway without a restart, now it serves v1
+        run: |
+          uv run python week05-mlflow-registry/scripts/release.py rollback --reason "ci check"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/admin/reload)" = "403"
+          curl -sf -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8080/admin/reload | jq
+          test "$(curl -s localhost:8080/health | jq -r .registry.version)" = "1"
+
+      - name: Show logs if anything failed
+        if: failure()
+        run: |
+          cat gateway.log || true
+          (cd week05-mlflow-registry && docker compose logs --tail 50)
+
+  test-week06:
+    # Test the DEPLOY, not just the code: steady streaming traffic through the real gateway while it switches
+    # model servers. Unit tests can't show what users see during a switch; only real traffic through a real switch can.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # The gateway package; the benchmark starts its own fake model servers and gateway on free ports.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve
+
+      - name: Blue/Green switch under load fails no request
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode bluegreen --max-failed 0
+
+      - name: Canary (10, 50, 100 percent) under load fails no request
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode canary --max-failed 0
+
+      # The control: the same tool must SEE the outage a restart causes. Without this, a benchmark broken in a way
+      # that always reports 0 failures would make the two checks above pass while measuring nothing.
+      - name: Control - a naive restart under load does fail requests
+        run: uv run python week06-blue-green/scripts/switch_bench.py --mode naive --min-failed 1
+
+  test-week07:
+    # The drift checks on the committed baseline window, with a stand-in embedding (no model download, no torch).
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # week07-drift, not week07: Evidently without sentence-transformers (torch). CI only runs the statistics.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week07-drift
+
+      - name: Run Week 7 drift tests
+        run: uv run pytest -v week07-drift/tests
+
+  test-week08:
+    # The automatic rollback, end to end: a bad green deploy must be rolled back by the controller on its own, with
+    # zero failed requests. A rollback path that never runs is one that fails the day it's needed.
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # The gateway (week03-serve) and Week 7's drift check without torch (week07-drift): the controller uses the
+      # stand-in embedding here.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve --group week07-drift
+
+      - name: Run Week 8 unit tests (policy and controller, all dependencies faked)
+        run: uv run pytest -v week08-auto-rollback/tests
+
+      - name: Safety net - a bad deploy is rolled back automatically with no failed requests
+        run: uv run python week08-auto-rollback/scripts/ci_safety_net.py

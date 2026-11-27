@@ -11,7 +11,7 @@ week04-cpp-cleaner/                  the promptclean package
   CMakeLists.txt, pyproject.toml     scikit-build-core + CMake + pybind11 (build tools pinned exactly)
   tests/                             rules (run against both), property test, GIL test
   scripts/bench.py, gil_demo.py      the measurements below
-week03-gateway/app/sanitize.py       the gateway's use of it
+gateway/src/gateway/sanitize.py      the gateway's use of it
 ```
 
 ## Run it

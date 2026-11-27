@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 5: Model Registry</title>
+<meta name="description" content="An MLflow model registry on Postgres that decides what the gateway serves: a promotion gate, safe rollback, reload without restart, and CI against a real registry.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
+    --accent: #2f5bea; --accent-soft: #e8eefe;
+    --good: #16794c; --good-soft: #e5f5ec;
+    --warn: #8a5300; --warn-soft: #fff2dc;
+    --bad: #b4261e; --bad-soft: #fde9e7;
+    --java: #7a3fb0; --java-soft: #f1e8fa;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1a1f2a; --text: #e7eaf2; --muted: #98a1b5; --line: #2b3242;
+      --accent: #8aa6ff; --accent-soft: #1f2a4a;
+      --good: #4cc38a; --good-soft: #12301f;
+      --warn: #f0b34a; --warn-soft: #3a2b0e;
+      --bad: #ff7b72; --bad-soft: #3a1613;
+      --java: #c79bf2; --java-soft: #2d1f40;
+      --code-bg: #202636;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; font-size: 0.88em; }
+  p code, li code { overflow-wrap: anywhere; } /* long names like MLFLOW_HTTP_REQUEST_MAX_RETRIES wrap on phones */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; gap: 40px; padding: 0 20px; }
+  nav.toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 32px 0; font-size: 14.5px; }
+  nav.toc .toc-title { font-weight: 700; margin-bottom: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 12px; }
+  nav.toc a { display: block; padding: 5px 10px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--text); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  main { padding: 40px 0 80px; min-width: 0; }
+
+  .hero { padding: 8px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: 2.5rem; line-height: 1.15; margin: 8px 0 14px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 40em; }
+  h2 { font-size: 1.7rem; margin: 56px 0 6px; letter-spacing: -0.01em; line-height: 1.25; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p { margin: 10px 0; }
+  .sub { color: var(--muted); margin-top: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  .callout { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .callout > b:first-child { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+  .callout p { margin: 4px 0; }
+  .callout.java { background: var(--java-soft); color: var(--text); border-color: color-mix(in srgb, var(--java) 30%, transparent); }
+  .callout.java > b:first-child { color: var(--java); }
+  .callout.measured { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.measured > b:first-child { color: var(--good); }
+  .callout.gotcha { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .callout.gotcha > b:first-child { color: var(--warn); }
+  .callout.bug { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .callout.bug > b:first-child { color: var(--bad); }
+  .callout.idea { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .callout.idea > b:first-child { color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15.5px; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  figure.diagram { margin: 20px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 12px 10px; }
+  figure.diagram figcaption { text-align: center; color: var(--muted); font-size: 14px; padding: 8px 12px 4px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .tl { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 20px 0; }
+  .tl-title { font-weight: 700; margin-bottom: 10px; }
+  .tl-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; margin: 7px 0; }
+  .tl-label { font-size: 13.5px; color: var(--muted); text-align: right; }
+  .tl-track { position: relative; height: 30px; background: var(--code-bg); border-radius: 7px; }
+  .bar { position: absolute; top: 3px; height: 24px; border-radius: 6px; font-size: 12px; line-height: 24px; padding: 0 8px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .bar.blue { background: #2f5bea; } .bar.green { background: #16794c; } .bar.red { background: #c0392b; }
+  .bar.grey { background: #7b8499; } .bar.amber { background: #b9770e; } .bar.purple { background: #7a3fb0; }
+  .tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 6px 0 0 142px; }
+  .tl-note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .bar.out { overflow: visible; padding: 0; }
+  .bar.out span { position: absolute; left: 100%; margin-left: 8px; color: var(--text); }
+  .marker { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--bad); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; margin-bottom: 2px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+  .steps { list-style: none; counter-reset: s; padding: 0; margin: 16px 0; }
+  .steps li { counter-increment: s; position: relative; padding: 4px 0 12px 46px; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 2px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  .status { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  .status.done { background: var(--good-soft); color: var(--good); }
+  .status.todo { background: var(--code-bg); color: var(--muted); }
+  .status.next { background: var(--warn-soft); color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding-top: 18px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; gap: 0; }
+    nav.toc { display: none; }
+    h1 { font-size: 2rem; }
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-label { text-align: left; }
+    .tl-axis { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Week 5</div>
+  <a href="#big-picture">The big picture</a>
+  <a href="#version">1. What a version is</a>
+  <a href="#promote">2. Publishing is not deploying</a>
+  <a href="#rollback">3. Rollback, and two calls that can't be atomic</a>
+  <a href="#gateway">4. The gateway listens</a>
+  <a href="#failure">5. When MLflow is down</a>
+  <a href="#fakes">6. Fakes that lie</a>
+  <a href="#ci">7. CI against a real registry</a>
+  <a href="#progress">Progress and next</a>
+  <a href="week04.html">&larr; Week 4</a>
+  <a href="week06.html">Week 6 &rarr;</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI Infra Platform &middot; Week 5</div>
+  <h1>A model registry the gateway listens to</h1>
+  <p class="lead">Month 2 starts with the problem ML systems are known for: they fail silently. A worse model throws no exception; it just answers worse.
+  The first defence is knowing exactly what is live, refusing what wasn't tested, and being one command away from the last good version.
+  This week: an MLflow registry on Postgres, a promotion gate, rollback, and a gateway that switches without a restart.</p>
+  <div class="stats">
+    <div class="stat"><b>90% vs 100%</b><span>eval pass rate, 0.5B vs 1.5B model, for 69 vs 116 ms to first token</span></div>
+    <div class="stat"><b>247 s &rarr; 2.3 s</b><span>gateway startup with MLflow down: client default retries vs capped</span></div>
+    <div class="stat"><b>4 ms</b><span>a reload with MLflow down: 503, old version keeps serving</span></div>
+    <div class="stat"><b>0 restarts</b><span>to switch the gateway's live version (POST /admin/reload)</span></div>
+  </div>
+</header>
+
+<section id="big-picture">
+<h2>The big picture</h2>
+<p class="sub">Three separate steps: score and publish, decide what is live, serve it.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+  CARD["settings card<br/>(YAML in git)"] --> REG["register.py<br/>score + publish"]
+  REG --> ML[("MLflow registry<br/>Postgres + artifact volume")]
+  REL["release.py<br/>promote / rollback"] -- "moves aliases" --> ML
+  ML -- "champion card" --> GW["gateway<br/>startup + /admin/reload"]
+  GW --> MS["model server"]
+</pre>
+<figcaption>register.py never touches the live version; only release.py moves the champion alias.</figcaption>
+</figure>
+<div class="callout java"><b>Java analogy</b><p>The registry is Nexus or Artifactory for model settings: immutable, numbered versions. The <code>champion</code> alias is the <code>current</code> symlink in a releases folder: deploying and rolling back are pointer moves, nothing is rebuilt.</p></div>
+</section>
+
+<section id="version">
+<h2><span class="num">1</span>What a version is</h2>
+<p class="sub">A settings card plus a score sheet, not a weights file.</p>
+<p>Retraining is out of scope, and 16&nbsp;GB of weights don't belong in an artifact store on a laptop. So a version is the <b>settings card</b> the gateway serves with (<code>model_id</code>, <code>temperature</code>, <code>max_tokens</code>, <code>system_prompt</code>) and a <b>score sheet</b>: a 10-prompt keyword eval and time to first token. Many LLM teams version prompts and configs this way.</p>
+<div class="table-wrap"><table>
+<tr><th>Version</th><th>Card</th><th>Pass rate</th><th>TTFT p50</th><th>Tag</th></tr>
+<tr><td>v1</td><td>Qwen2.5-0.5B-Instruct, temperature 0.7</td><td>90%</td><td>69 ms</td><td><code>eval=passed</code></td></tr>
+<tr><td>v2</td><td>Qwen2.5-1.5B-Instruct, temperature 0.3</td><td>100%</td><td>116 ms</td><td><code>eval=passed</code></td></tr>
+</table></div>
+<p>The bigger model got 17 &times; 23 right (v1 said 481), at about 70% more time to first token. The score sheet puts that tradeoff on the record before anything ships.</p>
+<div class="callout gotcha"><b>What a keyword eval can't see</b><p>v1 called <i>Romeo and Juliet</i> "the novel" and still passed: "Shakespeare" was in the answer. A keyword eval catches a broken or much worse card, not subtle quality loss. That is what Week 7's drift and quality signals are for.</p></div>
+</section>
+
+<section id="promote">
+<h2><span class="num">2</span>Publishing is not deploying</h2>
+<p class="sub">Registering a version and making it live are different commands.</p>
+<p><code>register.py</code> scores a card, logs it as an MLflow run and registers a new version tagged <code>eval=passed</code> or <code>eval=failed</code>. It never touches the <code>champion</code> alias. <code>release.py promote N</code> does that, and refuses any version not tagged <code>eval=passed</code>.</p>
+<div class="callout idea"><b>A CI/CD idea</b><p>"Build once, deploy many": the artifact is built and published once; which one runs is a separate, deliberate decision. The eval tag is the quality gate, like a branch rule that blocks merging until CI is green.</p></div>
+<div class="table-wrap"><table>
+<tr><th>Command</th><th>Result</th></tr>
+<tr><td><code>promote 2</code> (eval=passed)</td><td><code>champion</code> &rarr; v2, old champion &rarr; <code>fallback</code></td></tr>
+<tr><td><code>promote 3</code> (eval=failed)</td><td>refused, nothing moves</td></tr>
+<tr><td><code>promote 2</code> again</td><td>no change, and <code>fallback</code> is not overwritten</td></tr>
+</table></div>
+<p>MLflow registry <i>stages</i> (Staging/Production) are deprecated; aliases and tags replace them. MLflow also keeps no history of where an alias pointed, so every move tags the version: <code>promoted_at</code>, <code>promoted_by</code>, <code>rolled_back_at</code>, <code>rollback_reason</code>.</p>
+</section>
+
+<section id="rollback">
+<h2><span class="num">3</span>Rollback, and two calls that can't be atomic</h2>
+<p class="sub">Order the calls so that every in-between state is safe.</p>
+<p><code>rollback</code> moves <code>champion</code> back to <code>fallback</code> and then <b>clears</b> <code>fallback</code>. The version just rolled away from is suspect, so it must not be one command from going live again; a second rollback is refused until a good version is promoted.</p>
+<p>That is two API calls, and MLflow can't run them as one transaction. So the order matters:</p>
+<div class="table-wrap"><table>
+<tr><th>Command</th><th>Order</th><th>Crash in between leaves</th></tr>
+<tr><td>promote</td><td>set fallback, then champion</td><td>old champion still live. Harmless</td></tr>
+<tr><td>rollback</td><td>set champion, then clear fallback</td><td>good version already live. Harmless</td></tr>
+</table></div>
+<p>A test makes the fake registry crash at each step and checks the bad version is never left live.</p>
+<div class="callout java"><b>Java analogy</b><p>The same thinking as a <code>@Transactional</code> method that calls two remote services: there's no rollback across them, so you order the writes so a partial failure is safe.</p></div>
+</section>
+
+<section id="gateway">
+<h2><span class="num">4</span>The gateway listens</h2>
+<p class="sub">Resolve at startup, switch on reload, one card per request.</p>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  participant Op as Operator
+  participant ML as MLflow
+  participant GW as Gateway
+  GW->>ML: startup: champion?
+  ML-->>GW: v2 card
+  Note over GW: serves v2
+  Op->>ML: release.py rollback
+  Op->>GW: POST /admin/reload (X-Admin-Token)
+  GW->>ML: champion?
+  ML-->>GW: v1 card
+  Note over GW: next request uses v1
+</pre>
+<figcaption>Tested end to end in CI against a real MLflow.</figcaption>
+</figure>
+<ul>
+  <li><b>Startup, fail fast.</b> With the registry on and no usable card there is nothing correct to serve, so the gateway refuses to start and the container is restarted. Like a Spring Boot app that won't start without its datasource.</li>
+  <li><b>One card per request.</b> Each request reads the card reference once. A reload swaps the reference; requests already running keep the card they started with. The card is a frozen dataclass: an immutable object behind an <code>AtomicReference</code>, in Java terms.</li>
+  <li><b>What the card controls.</b> <code>model</code> always; <code>max_tokens</code> capped; <code>temperature</code> and the system prompt unless the caller chose their own.</li>
+  <li><b>Never block the event loop.</b> The MLflow client is synchronous, so it runs on a worker thread (Week 1's lesson).</li>
+  <li><b>An admin endpoint needs a secret.</b> <code>/admin/reload</code> changes what every user gets, so it needs <code>X-Admin-Token</code>, compared in constant time. No token configured means the endpoint is off.</li>
+</ul>
+<div class="callout gotcha"><b>What reload doesn't do yet</b><p>The card's <code>model_id</code> goes into each request, but the Week 2 model server has one model loaded. Switching between two running model servers, with zero dropped requests, is Week 6.</p></div>
+</section>
+
+<section id="failure">
+<h2><span class="num">5</span>When MLflow is down</h2>
+<p class="sub">A default that suits a batch job hangs a server.</p>
+<div class="table-wrap"><table>
+<tr><th>Situation</th><th>Result</th></tr>
+<tr><td>Client call, MLflow unreachable, default settings</td><td><b>247 s</b> of retries, then an error</td></tr>
+<tr><td>Gateway startup, MLflow unreachable, retries capped to 0</td><td>exits after <b>2.3 s</b> (mostly Python starting)</td></tr>
+<tr><td><code>/admin/reload</code>, MLflow stopped</td><td><b>503 in 4 ms</b>: "Still serving v1", <code>/health</code> says <code>degraded</code></td></tr>
+<tr><td>MLflow back, reload again</td><td>200, error cleared</td></tr>
+</table></div>
+<div class="callout measured"><b>Measured</b><p>For a training script, retrying for four minutes is reasonable. For a gateway it means a registry outage blocks deploys for four minutes per attempt. The gateway sets <code>MLFLOW_HTTP_REQUEST_MAX_RETRIES=0</code> unless told otherwise, and relies on the orchestrator to restart it and on <code>last_good</code> to keep serving.</p></div>
+<p>A failed reload is <b>loud</b>: a 503 with the reason, a warning in the log, <code>degraded</code> on <code>/health</code>. Falling back silently would hide exactly the kind of failure this month is about.</p>
+</section>
+
+<section id="fakes">
+<h2><span class="num">6</span>Fakes that lie</h2>
+<p class="sub">A test double is only as good as its match with the real thing.</p>
+<p>The unit tests use fake registries: dicts behind the same method names as <code>MlflowClient</code>, so they run in half a second with no server. Two mismatches turned up when the code met the real server:</p>
+<div class="callout bug"><b>Bug in the fake</b><p><code>MlflowException("...", error_code="RESOURCE_DOES_NOT_EXIST")</code> silently becomes <code>INTERNAL_ERROR</code>: the argument must be the protobuf enum constant. The fake raised the wrong error, and the code under test correctly refused to treat it as "not found".</p></div>
+<div class="callout gotcha"><b>Real behaviour you'd guess wrong</b><p>A missing alias is <code>INVALID_PARAMETER_VALUE</code>, not <code>RESOURCE_DOES_NOT_EXIST</code>.</p></div>
+<p>So CI asks the real server for both error codes and fails if they ever differ from what the fakes assume.</p>
+</section>
+
+<section id="ci">
+<h2><span class="num">7</span>CI against a real registry</h2>
+<p class="sub">The first CI job with state that must survive a restart.</p>
+<ol class="steps">
+  <li>Unit tests: promote/rollback rules on the fake registry.</li>
+  <li>Start MLflow + Postgres from the same compose file used locally.</li>
+  <li>Register three cards with <code>register.py</code>'s own code (no scoring: no GPU in CI), and check <code>eval=failed</code> is refused.</li>
+  <li><b><code>docker compose down</code>, then <code>up</code></b>: volumes kept, containers new.</li>
+  <li>Check <code>champion</code> survived, <code>resolve_champion()</code> returns v2 from the real server, and the error codes match the fakes.</li>
+  <li>Start the gateway against it: serves v2; reload without the token gets 403; roll back, reload, now serves v1.</li>
+</ol>
+<div class="callout idea"><b>A CI/CD idea</b><p>CI installs a light dependency group (<code>week05-registry</code>: the MLflow client, no torch), the same split as Week 2's <code>week02-serve</code>. The scoring half of <code>register.py</code> imports torch only inside its functions, so the publishing half runs in CI.</p></div>
+<div class="callout gotcha"><b>The price of the client</b><p>The gateway image went from 293&nbsp;MB to <b>412&nbsp;MB</b> with <code>mlflow-skinny</code>, for two HTTP calls. Accepted for now (the supported client, pinned to the server's version); a small hand-written client for those two REST endpoints would take it back out.</p></div>
+<p>Deferred to Month 4: promotion as a GitHub Actions workflow with a required approval, once there's an MLflow server CI can reach.</p>
+</section>
+
+<section id="progress">
+<h2>Progress and next steps</h2>
+<ol class="steps">
+  <li><b>MLflow + Postgres in compose</b><span class="status done">done</span></li>
+  <li><b>Score and register settings cards</b><span class="status done">done</span> &middot; 90% vs 100%</li>
+  <li><b>Promote and rollback with a quality gate</b><span class="status done">done</span></li>
+  <li><b><code>resolve_champion()</code>, tests first</b><span class="status done">done</span> &middot; 24 tests</li>
+  <li><b>Gateway: champion at startup, <code>/admin/reload</code></b><span class="status done">done</span></li>
+  <li><b>CI against a real registry, across a restart</b><span class="status done">done</span></li>
+  <li><b>Week 6: two upstreams, switch with zero dropped requests</b><span class="status done">done</span> &middot; <a href="week06.html">Week 6</a></li>
+</ol>
+<h3>Run it yourself</h3>
+<pre><code>(cd week05-mlflow-registry && docker compose up -d --build --wait)
+uv sync --group dev --group week03 --group week05
+cd week05-mlflow-registry
+uv run python scripts/register.py cards/v1-qwen-0.5b.yaml
+uv run python scripts/release.py promote 1
+cd ..
+MLFLOW_TRACKING_URI=http://localhost:5001 ADMIN_TOKEN=dev-token uv run uvicorn gateway.main:app --port 8080</code></pre>
+<p>Full steps in the <a href="https://github.com/DavisSebastian/ai-infra-platform/tree/main/week05-mlflow-registry">Week 5 README</a>.</p>
+</section>
+
+<footer>
+  Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
+  Timings from an Apple-silicon Mac, single runs; treat them as illustrations, not benchmarks. <a href="week04.html">Week 4: C++ in the Gateway</a>
+</footer>
+</main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: mq.matches ? "dark" : "default",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  });
+  mq.addEventListener("change", () => location.reload());
+
+  const links = [...document.querySelectorAll("nav.toc a")];
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        map.get(e.target.id)?.classList.add("active");
+      }
+    }
+  }, { rootMargin: "-10% 0px -80% 0px" });
+  document.querySelectorAll("main section[id]").forEach(s => io.observe(s));
+</script>
+</body>
+</html>
+

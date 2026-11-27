@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 6: Blue/Green Serving</title>
+<meta name="description" content="Two model servers behind the gateway: a traffic split, per-server admission and settings, and a switch under load that failed 0 of 500 requests where a restart failed 16%.">
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #e4e1da;
+    --accent: #2f5bea; --accent-soft: #e8eefe;
+    --good: #16794c; --good-soft: #e5f5ec;
+    --warn: #8a5300; --warn-soft: #fff2dc;
+    --bad: #b4261e; --bad-soft: #fde9e7;
+    --java: #7a3fb0; --java-soft: #f1e8fa;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1a1f2a; --text: #e7eaf2; --muted: #98a1b5; --line: #2b3242;
+      --accent: #8aa6ff; --accent-soft: #1f2a4a;
+      --good: #4cc38a; --good-soft: #12301f;
+      --warn: #f0b34a; --warn-soft: #3a2b0e;
+      --bad: #ff7b72; --bad-soft: #3a1613;
+      --java: #c79bf2; --java-soft: #2d1f40;
+      --code-bg: #202636;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 5px; font-size: 0.88em; }
+  p code, li code { overflow-wrap: anywhere; } /* long names like MLFLOW_HTTP_REQUEST_MAX_RETRIES wrap on phones */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; gap: 40px; padding: 0 20px; }
+  nav.toc { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 32px 0; font-size: 14.5px; }
+  nav.toc .toc-title { font-weight: 700; margin-bottom: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 12px; }
+  nav.toc a { display: block; padding: 5px 10px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav.toc a:hover { color: var(--text); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  main { padding: 40px 0 80px; min-width: 0; }
+
+  .hero { padding: 8px 0 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: 2.5rem; line-height: 1.15; margin: 8px 0 14px; letter-spacing: -0.02em; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 40em; }
+  h2 { font-size: 1.7rem; margin: 56px 0 6px; letter-spacing: -0.01em; line-height: 1.25; }
+  h2 .num { color: var(--accent); margin-right: 8px; }
+  h3 { font-size: 1.15rem; margin: 28px 0 6px; }
+  p { margin: 10px 0; }
+  .sub { color: var(--muted); margin-top: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  .callout { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border: 1px solid transparent; }
+  .callout > b:first-child { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+  .callout p { margin: 4px 0; }
+  .callout.java { background: var(--java-soft); color: var(--text); border-color: color-mix(in srgb, var(--java) 30%, transparent); }
+  .callout.java > b:first-child { color: var(--java); }
+  .callout.measured { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, transparent); }
+  .callout.measured > b:first-child { color: var(--good); }
+  .callout.gotcha { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  .callout.gotcha > b:first-child { color: var(--warn); }
+  .callout.bug { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .callout.bug > b:first-child { color: var(--bad); }
+  .callout.idea { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .callout.idea > b:first-child { color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15.5px; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  figure.diagram { margin: 20px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 12px 10px; }
+  figure.diagram figcaption { text-align: center; color: var(--muted); font-size: 14px; padding: 8px 12px 4px; }
+  .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .tl { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin: 20px 0; }
+  .tl-title { font-weight: 700; margin-bottom: 10px; }
+  .tl-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; margin: 7px 0; }
+  .tl-label { font-size: 13.5px; color: var(--muted); text-align: right; }
+  .tl-track { position: relative; height: 30px; background: var(--code-bg); border-radius: 7px; }
+  .bar { position: absolute; top: 3px; height: 24px; border-radius: 6px; font-size: 12px; line-height: 24px; padding: 0 8px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .bar.blue { background: #2f5bea; } .bar.green { background: #16794c; } .bar.red { background: #c0392b; }
+  .bar.grey { background: #7b8499; } .bar.amber { background: #b9770e; } .bar.purple { background: #7a3fb0; }
+  .tl-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 6px 0 0 142px; }
+  .tl-note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+  .bar.out { overflow: visible; padding: 0; }
+  .bar.out span { position: absolute; left: 100%; margin-left: 8px; color: var(--text); }
+  .marker { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--bad); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; margin-bottom: 2px; }
+  .card p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+
+  .steps { list-style: none; counter-reset: s; padding: 0; margin: 16px 0; }
+  .steps li { counter-increment: s; position: relative; padding: 4px 0 12px 46px; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 2px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  .status { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; vertical-align: middle; margin-left: 6px; }
+  .status.done { background: var(--good-soft); color: var(--good); }
+  .status.todo { background: var(--code-bg); color: var(--muted); }
+  .status.next { background: var(--warn-soft); color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 60px; padding-top: 18px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; gap: 0; }
+    nav.toc { display: none; }
+    h1 { font-size: 2rem; }
+    .tl-row { grid-template-columns: 1fr; gap: 3px; }
+    .tl-label { text-align: left; }
+    .tl-axis { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" id="toc">
+  <div class="toc-title">Week 6</div>
+  <a href="#big-picture">The big picture</a>
+  <a href="#split">1. One number decides the side</a>
+  <a href="#once">2. Pick once, finish there</a>
+  <a href="#bulkhead">3. One admission limit per server</a>
+  <a href="#cards">4. Each server gets its own settings</a>
+  <a href="#measured">5. Measured: restart vs Blue/Green</a>
+  <a href="#ci">6. CI tests the deploy</a>
+  <a href="#progress">Progress and next</a>
+  <a href="week05.html">&larr; Week 5</a>
+  <a href="week07.html">Week 7 &rarr;</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">AI Infra Platform &middot; Week 6</div>
+  <h1>Moving traffic between model servers without dropping a request</h1>
+  <p class="lead">Week 5 made the registry decide <i>which settings</i> are live. But a new model version usually means a new model server, and swapping servers is where users get hurt.
+  This week the gateway runs in front of two servers, <b>blue</b> (serving now) and <b>green</b> (the new one), and moves traffic between them with one admin call: gradually, reversibly, and without cutting off a request already streaming.</p>
+  <div class="stats">
+    <div class="stat"><b>0 of 500</b><span>requests failed switching blue &rarr; green under load (Blue/Green and canary)</span></div>
+    <div class="stat"><b>78&ndash;80 of 500</b><span>failed the naive way: change the URL, restart the gateway (16%)</span></div>
+    <div class="stat"><b>1.55 s</b><span>of "connection refused" for users during that restart</span></div>
+    <div class="stat"><b>424 ms</b><span>p99 in every mode: the switch itself adds no latency</span></div>
+  </div>
+</header>
+
+<section id="big-picture">
+<h2>The big picture</h2>
+<p class="sub">Two servers stay up. The gateway decides, per request, which one answers.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+  C["client"] --> GW["gateway<br/>choose(split) once per request"]
+  GW -- "100 - green %" --> B["blue model server<br/>card: alias blue"]
+  GW -- "green %" --> G["green model server<br/>card: alias green"]
+  OP["operator / Week 8 automation"] -- "POST /admin/traffic {green: N}" --> GW
+  ML[("MLflow registry<br/>aliases blue, green, champion")] -- "cards on reload" --> GW
+</pre>
+<figcaption>Promotion is moving one number from 0 to 100. Rollback is setting it back to 0.</figcaption>
+</figure>
+<div class="callout java"><b>Java analogy</b><p>A weighted load balancer whose weights change at runtime, like Spring Cloud LoadBalancer with a weight you can turn from an admin endpoint. The weights live in one immutable object, and changing them is one <code>AtomicReference.set()</code>.</p></div>
+</section>
+
+<section id="split">
+<h2><span class="num">1</span>One number decides the side</h2>
+<p class="sub"><code>TrafficSplit(green=10)</code> and <code>choose(split, r)</code> in <code>gateway/router.py</code>.</p>
+<p>A split stores only green's percent; blue's is <code>100 - green</code>, so the two can never disagree. For each request the gateway draws <code>r = random.random()</code> (from 0 up to, not including, 1). Green owns the bottom slice of that range:</p>
+<pre><code>return GREEN if r * 100 &lt; split.green else BLUE</code></pre>
+<p>Random numbers are uniform, so a 10% slice gets about 10% of requests, with no shared counter, no lock and no coordination between gateway copies.</p>
+<div class="callout gotcha"><b>The boundary belongs to blue</b><p>With <code>&lt;=</code> instead of <code>&lt;</code>, <code>green=0</code> would still send a request to green whenever <code>r</code> is exactly 0.0: "rolled back" would not mean "nothing goes to green". A test feeds 1000 evenly spaced values of <code>r</code> and requires <i>exactly</i> 10&nbsp;&times;&nbsp;green of them to land on green, which catches that off-by-one.</p></div>
+<div class="callout java"><b>Java analogy</b><p><code>r</code> is passed in rather than drawn inside <code>choose()</code>, for the same reason you inject a <code>Clock</code> instead of calling <code>Instant.now()</code>: tests can pick the exact values.</p></div>
+</section>
+
+<section id="once">
+<h2><span class="num">2</span>Pick once, finish there</h2>
+<p class="sub">Changing the split never moves a request that has already started.</p>
+<p>The gateway calls <code>choose()</code> once, near the start of the request, and uses that side until the stream ends. A new split is one reference assignment: requests already running keep the side they picked; requests that start after it use the new one.</p>
+<pre><code>t=0 s   request A starts   -> blue, starts streaming
+t=1 s   POST /admin/traffic {"green": 100}
+t=2 s   request A still streaming from blue    (it never asks again)
+        request B starts   -> green</code></pre>
+<p>A test does exactly this: it starts a 1-second stream on blue, switches to 100% green partway, and checks that every chunk came from blue and the stream reached <code>[DONE]</code>. Meanwhile <code>/health</code> shows blue with <code>in_flight: 1</code>, draining. When that reaches 0 with blue's weight at 0, blue is safe to stop.</p>
+</section>
+
+<section id="bulkhead">
+<h2><span class="num">3</span>One admission limit per server</h2>
+<p class="sub">Each server has its own capacity, so each gets its own in-flight cap and queue.</p>
+<p>Week 3's admission control caps how many requests the model server works on at once. With two servers, a single shared cap would be wrong: while blue drains its last long streams, a request headed for an idle green would wait behind them, or be turned away with a 503.</p>
+<p>So each side has its own pooled client <i>and</i> its own admission limit. To check the test really guards this, the code was broken on purpose (both sides sharing blue's limit, one slot, no queue): the test failed at the green request, as it should.</p>
+<div class="callout java"><b>Java analogy</b><p>The bulkhead pattern (Resilience4j <code>Bulkhead</code>): one isolated pool per downstream service, so one busy dependency can't starve calls to another.</p></div>
+</section>
+
+<section id="cards">
+<h2><span class="num">4</span>Each server gets its own settings</h2>
+<p class="sub">Two more registry aliases: <code>blue</code> and <code>green</code>.</p>
+<p>Week 5's settings card (model, temperature, token limit, system prompt) now comes per side. Each server follows its own alias, and <code>champion</code> becomes the record of what was officially released. With one server, nothing changes from Week 5: blue serves <code>champion</code>.</p>
+<div class="table-wrap"><table>
+<tr><th>Step</th><th>Command</th><th>Users see</th></tr>
+<tr><td>Deploy</td><td><code>release.py deploy 2 --to green</code>, then <code>POST /admin/reload</code></td><td>nothing yet: green has 0% of traffic</td></tr>
+<tr><td>Canary</td><td><code>POST /admin/traffic {"green": 10}</code></td><td>1 in 10 new requests on v2</td></tr>
+<tr><td>Promote</td><td><code>{"green": 100}</code>, then <code>release.py promote 2</code></td><td>all new requests on v2; blue drains</td></tr>
+<tr><td>Rollback</td><td><code>{"green": 0}</code></td><td>all new requests back on v1, instantly</td></tr>
+</table></div>
+<p><code>deploy</code> uses the same gate as <code>promote</code>: only versions tagged <code>eval=passed</code> can reach either server.</p>
+<div class="callout gotcha"><b>All or nothing</b><p>A reload fetches every side's card before changing any. If green's new card is fine but blue's alias is missing, neither side changes and the answer is a 503 saying "Still serving blue v1, green v2". A half-applied reload would quietly put one side on a new version while you believe the reload failed.</p></div>
+<div class="callout idea"><b>Why two assignments in a row are safe here</b><p>The reload sets <code>blue.card</code>, then <code>green.card</code>. No request can run in between: asyncio switches tasks only at an <code>await</code>, and there is none between the two lines. In Java, where a thread can be pre-empted anywhere, you would need a lock or one <code>AtomicReference</code> holding both.</p></div>
+</section>
+
+<section id="measured">
+<h2><span class="num">5</span>Measured: restart vs Blue/Green</h2>
+<p class="sub">50 streaming requests per second for 10 s, switching blue &rarr; green at 4 s. Three runs each.</p>
+<div class="table-wrap"><table>
+<tr><th>How the switch is done</th><th>Failed requests</th><th>Users affected for</th><th>p99 (successful)</th></tr>
+<tr><td><b>Naive</b>: change <code>UPSTREAM_URL</code>, restart the gateway</td><td><b>78&ndash;80 of 500</b> (16%), all "connection refused"</td><td>1.55 s</td><td>424 ms</td></tr>
+<tr><td><b>Blue/Green</b>: <code>POST /admin/traffic {"green": 100}</code></td><td><b>0 of 500</b></td><td>0 s</td><td>424 ms</td></tr>
+<tr><td><b>Canary</b>: green 10% &rarr; 50% &rarr; 100%, 2 s apart</td><td><b>0 of 500</b></td><td>0 s</td><td>425 ms</td></tr>
+</table></div>
+<ul>
+  <li><b>No running stream was cut off</b>, even in the naive case: on SIGTERM, uvicorn stops accepting connections but lets running requests finish. Every failure was a new request arriving while nothing was listening: 0.5 s of draining plus 1.1 s of starting.</li>
+  <li><b>This is naive at its best.</b> Only the gateway restarted; both model servers stayed up. A real "stop v1, start v2" restarts the model server, and loading weights takes far longer than starting Python. Blue/Green stays at zero because green is warm before it gets traffic.</li>
+  <li>The fake servers stream 20 chunks 20 ms apart (400 ms), so the gateway's overhead is about 24 ms in every mode.</li>
+</ul>
+<div class="callout gotcha"><b>How the load is generated matters</b><p>The benchmark is <i>open-loop</i>: a request starts every 20 ms whether or not earlier ones have finished, like independent users. A closed loop, where each worker waits for its last reply, sends fewer requests during an outage, so it would under-count exactly the failures being measured.</p></div>
+<div class="callout idea"><b>Checking the tool first</b><p>Two answers can be worked out by hand. Blue/Green at 4 s must give exactly 200 requests to blue and 300 to green: measured 200 / 300. Canary must give about 2&nbsp;s &times; 50 &times; (10% + 50% + 100%) = 160 to green: measured 158.</p></div>
+</section>
+
+<section id="ci">
+<h2><span class="num">6</span>CI tests the deploy, not just the code</h2>
+<p class="sub">The <code>test-week06</code> job runs real traffic through a real switch on every push.</p>
+<div class="table-wrap"><table>
+<tr><th>CI step</th><th>Passes when</th></tr>
+<tr><td>Blue/Green switch under load</td><td>0 requests failed (<code>--max-failed 0</code>)</td></tr>
+<tr><td>Canary 10 &rarr; 50 &rarr; 100 under load</td><td>0 requests failed</td></tr>
+<tr><td><b>Control</b>: naive restart under load</td><td>at least 1 request failed (<code>--min-failed 1</code>)</td></tr>
+</table></div>
+<div class="callout idea"><b>A CI/CD idea: test the test</b><p>A benchmark broken in a way that always reports zero failures would make the first two checks pass while measuring nothing. The control step requires the same tool to <i>see</i> the outage a restart causes. It's the same idea as a smoke alarm's test button.</p></div>
+</section>
+
+<section id="progress">
+<h2>Progress and next steps</h2>
+<ol class="steps">
+  <li><b>Fake servers that say who answered</b><span class="status done">done</span></li>
+  <li><b>Traffic split, tests first</b><span class="status done">done</span> &middot; 42 tests</li>
+  <li><b>Gateway: two servers, one admission limit each, <code>/admin/traffic</code></b><span class="status done">done</span></li>
+  <li><b>Each server's settings from its own registry alias</b><span class="status done">done</span></li>
+  <li><b>Measured: restart vs Blue/Green under load</b><span class="status done">done</span> &middot; 16% vs 0%</li>
+  <li><b>CI: real traffic through a real switch</b><span class="status done">done</span></li>
+  <li><b>Week 7: drift detection with Evidently</b><span class="status done">done</span> &middot; <a href="week07.html">Week 7</a></li>
+</ol>
+<h3>Run it yourself</h3>
+<pre><code>uv sync --group dev --group week03-serve
+uv run python week06-blue-green/scripts/switch_bench.py --mode naive
+uv run python week06-blue-green/scripts/switch_bench.py --mode bluegreen
+uv run python week06-blue-green/scripts/switch_bench.py --mode canary</code></pre>
+<p>Full steps in the <a href="https://github.com/DavisSebastian/ai-infra-platform/tree/main/week06-blue-green">Week 6 README</a>.</p>
+</section>
+
+<footer>
+  Part of <a href="https://github.com/DavisSebastian/ai-infra-platform">ai-infra-platform</a>, a hands-on path from backend engineering into AI infrastructure.
+  Measured on an Apple-silicon Mac against fake model servers, three runs per mode. <a href="week05.html">Week 5: Model Registry</a>
+</footer>
+</main>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: mq.matches ? "dark" : "default",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  });
+  mq.addEventListener("change", () => location.reload());
+
+  const links = [...document.querySelectorAll("nav.toc a")];
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        map.get(e.target.id)?.classList.add("active");
+      }
+    }
+  }, { rootMargin: "-10% 0px -80% 0px" });
+  document.querySelectorAll("main section[id]").forEach(s => io.observe(s));
+</script>
+</body>
+</html>
+

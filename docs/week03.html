@@ -183,11 +183,11 @@ flowchart TD
 </figure>
 <div class="table-wrap"><table>
 <tr><th>File</th><th>Role</th><th>Spring analogy</th></tr>
-<tr><td><code>app/main.py</code></td><td>The HTTP API and the order of the checks</td><td><code>@RestController</code> + filters</td></tr>
-<tr><td><code>app/redis_limiter.py</code></td><td>Token bucket as one atomic Lua script</td><td>Bucket4j with a Redis backend</td></tr>
-<tr><td><code>app/admission.py</code></td><td>In-flight cap, bounded queue, queue timeout</td><td><code>ThreadPoolExecutor</code> + <code>ArrayBlockingQueue</code> + <code>AbortPolicy</code></td></tr>
-<tr><td><code>app/upstream.py</code></td><td>One pooled HTTP client to the model server</td><td><code>WebClient</code> with a connection pool</td></tr>
-<tr><td><code>app/fake_upstream.py</code></td><td>A stand-in model server with exact timing, for tests</td><td>WireMock</td></tr>
+<tr><td><code>gateway/main.py</code></td><td>The HTTP API and the order of the checks</td><td><code>@RestController</code> + filters</td></tr>
+<tr><td><code>gateway/redis_limiter.py</code></td><td>Token bucket as one atomic Lua script</td><td>Bucket4j with a Redis backend</td></tr>
+<tr><td><code>gateway/admission.py</code></td><td>In-flight cap, bounded queue, queue timeout</td><td><code>ThreadPoolExecutor</code> + <code>ArrayBlockingQueue</code> + <code>AbortPolicy</code></td></tr>
+<tr><td><code>gateway/upstream.py</code></td><td>One pooled HTTP client to the model server</td><td><code>WebClient</code> with a connection pool</td></tr>
+<tr><td><code>gateway/fake_upstream.py</code></td><td>A stand-in model server with exact timing, for tests</td><td>WireMock</td></tr>
 </table></div>
 </section>
 
@@ -345,7 +345,7 @@ store permits AND updated_at = now, together</code></pre>
   <li><b>On the GPU</b><span class="status done">done</span> &middot; Llama 3.1 8B on an RTX 4090: 41 s &rarr; 5.5 s at 16 users, 172 s &rarr; 5.5 s at 64, $0.53</li>
 </ol>
 <h3>Run it yourself</h3>
-<pre><code>cd week03-gateway
+<pre><code>cd gateway
 docker compose up -d --build --wait
 curl -N localhost:8080/v1/chat/completions -H 'content-type: application/json' \
   -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}'

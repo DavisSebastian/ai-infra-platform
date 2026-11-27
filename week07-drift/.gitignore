@@ -1,0 +1,2 @@
+# Evidently HTML reports are ~4 MB each: regenerate them with drift_check.py --html instead of committing.
+results/*.html

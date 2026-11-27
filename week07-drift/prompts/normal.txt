@@ -1,0 +1,315 @@
+# "Normal" traffic: short everyday questions across 12 topics, one per line. Lines starting with # are ignored.
+# capture.py splits these 50/50 (seeded) into a baseline half and a holdout half: same kind of traffic, different
+# prompts. The holdout is scenario A, the false-alarm check: comparing it with the baseline must NOT alarm.
+# geography
+What is the capital of Australia?
+Which is the longest river in Africa?
+How many countries are there in South America?
+What is the largest desert in the world?
+Which ocean lies between Africa and Australia?
+What is the tallest mountain in Europe?
+Which country has the most islands?
+What is the capital of Canada?
+Where is the Great Barrier Reef?
+Which river flows through Paris?
+What is the smallest country in the world?
+Which continent is Egypt in?
+What is the capital of Japan?
+Which two countries share the longest border?
+What sea separates Europe and Africa?
+Where is Mount Kilimanjaro?
+What is the capital of Brazil?
+Which US state is the largest by area?
+What is the deepest lake in the world?
+Which country is shaped like a boot?
+What is the capital of Kenya?
+Which mountain range separates Europe and Asia?
+What is the largest island in the Mediterranean?
+Which country has the largest population?
+What is the capital of Norway?
+# science
+Why is the sky blue?
+What is photosynthesis?
+How far is the Moon from Earth?
+What is the boiling point of water at sea level?
+Why do we have seasons?
+What is the speed of light?
+How do magnets work?
+What is DNA made of?
+Why does ice float on water?
+What causes thunder?
+How many bones are in the human body?
+What is the largest planet in our solar system?
+How do vaccines work?
+What is an atom made of?
+Why do leaves change color in autumn?
+What is gravity?
+How does a rainbow form?
+What is the chemical symbol for gold?
+Why do stars twinkle?
+What is the difference between weather and climate?
+How do plants get water from their roots to their leaves?
+What is a black hole?
+Why is the ocean salty?
+What gas do plants release?
+How long does light from the Sun take to reach Earth?
+# history
+Who was the first person to walk on the Moon?
+When did World War II end?
+Who built the pyramids of Giza?
+What was the Renaissance?
+Who invented the printing press?
+When did the Berlin Wall fall?
+Who was Cleopatra?
+What started World War I?
+Who wrote the Declaration of Independence?
+When was the Roman Empire at its largest?
+Who was Mahatma Gandhi?
+What was the Industrial Revolution?
+Who discovered penicillin?
+When did the Titanic sink?
+Who was the first emperor of China?
+What was the Cold War?
+Who painted the Mona Lisa?
+When did India become independent?
+Who was Napoleon Bonaparte?
+What was the Silk Road?
+Who invented the telephone?
+When did humans first fly in an airplane?
+What were the Crusades?
+Who was Julius Caesar?
+What was the French Revolution about?
+# cooking
+How long should I boil an egg for a soft yolk?
+What can I use instead of eggs in baking?
+How do I make rice less sticky?
+What is the difference between baking soda and baking powder?
+How do I know when pasta is cooked?
+What spices go well with chicken?
+How do I keep cut avocado from turning brown?
+What is a quick breakfast idea?
+How long can cooked rice stay in the fridge?
+How do I make a simple tomato sauce?
+What does it mean to fold ingredients?
+How do I stop onions from making me cry?
+What is a good vegetarian source of protein?
+How do I sharpen a kitchen knife?
+What temperature should chicken be cooked to?
+How do I make pancakes fluffy?
+What is the best way to store fresh herbs?
+How do I caramelize onions?
+Can I freeze bread?
+What is umami?
+How do I cook quinoa?
+What is a roux?
+How do I make a basic salad dressing?
+Why did my bread not rise?
+How do I peel garlic quickly?
+# health and fitness
+How much water should I drink a day?
+What are the benefits of walking every day?
+How many hours of sleep do adults need?
+What is a good warm-up before running?
+How can I reduce stress?
+What foods are high in fiber?
+How often should I stretch?
+What is a healthy resting heart rate?
+How can I improve my posture at a desk?
+What are good sources of vitamin D?
+How do I start strength training?
+Is it better to exercise in the morning or evening?
+What is a balanced diet?
+How can I stop snacking late at night?
+What are the signs of dehydration?
+How long should a workout last?
+What is the difference between cardio and strength training?
+How can I sleep better?
+How much protein do I need?
+What is a simple way to start meditating?
+How do I avoid back pain when lifting?
+What are healthy snacks for work?
+How many steps a day is healthy?
+Why is breakfast considered important?
+How do I stay motivated to exercise?
+# everyday advice
+How do I remove a coffee stain from a shirt?
+What is a good way to save money each month?
+How do I write a polite email to decline an invitation?
+How can I be more productive in the morning?
+What should I pack for a weekend trip?
+How do I get rid of fruit flies?
+How do I make my houseplants grow better?
+What is a good gift for a coworker?
+How do I start a conversation with someone new?
+How can I keep my phone battery healthy?
+How do I clean a microwave easily?
+What is a good way to learn a new language?
+How do I prepare for a job interview?
+How do I fold a fitted sheet?
+What should I do if my car battery dies?
+How can I reduce my electricity bill?
+How do I unclog a drain without chemicals?
+How do I make a budget?
+What is a good way to remember names?
+How do I stop procrastinating?
+How do I choose a good watermelon?
+How can I make my room feel bigger?
+What should I do before a long flight?
+How do I write a thank-you note?
+How do I keep my laptop from overheating?
+# definitions
+What does inflation mean?
+What is a metaphor?
+What does GDP stand for?
+What is the meaning of the word ephemeral?
+What is a haiku?
+What does a vegan diet exclude?
+What is an interest rate?
+What is democracy?
+What is a mortgage?
+What does carbon neutral mean?
+What is a sonnet?
+What is the difference between a virus and bacteria?
+What does it mean to be bilingual?
+What is a credit score?
+What is a hurricane?
+What is renewable energy?
+What does the word nostalgia mean?
+What is a stock?
+What is a recession?
+What is an allergy?
+What does it mean to procrastinate?
+What is a podcast?
+What is an ecosystem?
+What is a pension?
+What does the term jet lag mean?
+# math and numbers
+What is 15 percent of 80?
+How many minutes are in a day?
+What is the square root of 144?
+How many centimeters are in a meter?
+What is 12 times 13?
+How do I convert Celsius to Fahrenheit?
+What is a prime number?
+How many seconds are in an hour?
+What is the area of a circle with radius 3?
+How many sides does a hexagon have?
+What is 7 cubed?
+How many grams are in a kilogram?
+What is the average of 4, 8 and 12?
+What is half of three quarters?
+How many weeks are in a year?
+What is 100 divided by 8?
+How do I calculate a tip of 20 percent?
+What is pi rounded to two decimals?
+How many degrees are in a triangle?
+What is 25 squared?
+How many zeros are in a million?
+What is the next number in the sequence 2, 4, 8, 16?
+How many inches are in a foot?
+What is 30 percent of 250?
+How many hours are in a week?
+# animals
+How long do cats usually live?
+Why do dogs wag their tails?
+What is the fastest land animal?
+How do bees make honey?
+What do pandas eat?
+How long can a camel go without water?
+Why do birds migrate?
+What is the largest animal on Earth?
+How do fish breathe underwater?
+Do elephants really never forget?
+What do owls eat?
+How many legs does a spider have?
+Why do cats purr?
+How do chameleons change color?
+What is the smallest bird?
+How long do turtles live?
+Why do zebras have stripes?
+How do bats find their way in the dark?
+What is a group of lions called?
+How much does an elephant weigh?
+Do penguins have knees?
+Why do frogs croak?
+How fast can a horse run?
+What animals hibernate in winter?
+How do octopuses camouflage themselves?
+# travel
+What is the best time of year to visit Japan?
+What should I see in Rome in two days?
+Do I need a visa to visit Thailand?
+What is the cheapest way to travel around Europe?
+How early should I arrive at the airport for an international flight?
+What are must-try foods in Italy?
+How do I avoid jet lag?
+What should I know before visiting India?
+Is it safe to drink tap water in Spain?
+What is a good itinerary for a week in Portugal?
+How do I find cheap flights?
+What should I pack for a beach holiday?
+What currency is used in Switzerland?
+What are popular things to do in New York?
+How do I travel with only a carry-on bag?
+What is the best way to get around Tokyo?
+What are some tips for traveling alone?
+How much should I tip in the United States?
+What is the weather like in Iceland in summer?
+What should I do if I lose my passport abroad?
+What are the top sights in London?
+How do I stay connected abroad without roaming charges?
+What is a good destination for a family holiday?
+Do I need travel insurance?
+What is the best way to see the northern lights?
+# language and writing
+What is the difference between affect and effect?
+How do I use a semicolon?
+What is a synonym for happy?
+When should I use whom instead of who?
+What is the plural of cactus?
+How do I write a good opening sentence?
+What is passive voice?
+What is the difference between its and it's?
+How do I make my writing more concise?
+What is an oxymoron?
+What is the past tense of swim?
+How do I write a short bio?
+What is alliteration?
+What is the difference between fewer and less?
+How do I end a formal letter?
+What is a run-on sentence?
+How many words are in a typical novel?
+What is a palindrome?
+How do I improve my vocabulary?
+What is the difference between there, their and they're?
+What is a thesis statement?
+How do I write a good summary?
+What is onomatopoeia?
+What does i.e. stand for?
+How do I avoid repeating words in an essay?
+# technology basics
+What is Wi-Fi?
+How does a search engine work?
+What is the cloud?
+What is a computer virus?
+How do I make a strong password?
+What is the difference between RAM and storage?
+What is Bluetooth?
+How does GPS work?
+What is an operating system?
+What is two-factor authentication?
+How do I back up my phone?
+What is a browser cookie?
+What does a router do?
+What is streaming?
+What is artificial intelligence?
+How do I free up space on my phone?
+What is a VPN?
+What does HTTPS mean?
+What is a QR code?
+How does a touchscreen work?
+What is an app?
+How do I update my computer?
+What is spam email?
+What is a pixel?
+What is 5G?

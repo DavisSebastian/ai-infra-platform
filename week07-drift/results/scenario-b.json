@@ -1,0 +1,104 @@
+{
+  "vs_baseline": {
+    "n_reference": 150,
+    "n_current": 66,
+    "checks": [
+      {
+        "feature": "prompt_words",
+        "kind": "input",
+        "method": "K-S p_value",
+        "score": 0.0344,
+        "drifted": true
+      },
+      {
+        "feature": "prompt_embedding",
+        "kind": "input",
+        "method": "model ROC AUC",
+        "score": 0.9492,
+        "drifted": true
+      },
+      {
+        "feature": "answer_words",
+        "kind": "output",
+        "method": "K-S p_value",
+        "score": 0.006,
+        "drifted": true
+      },
+      {
+        "feature": "ttft_ms",
+        "kind": "output",
+        "method": "K-S p_value, median +1%",
+        "score": 0.0556,
+        "drifted": false
+      },
+      {
+        "feature": "answer_empty",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      },
+      {
+        "feature": "refusal",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      }
+    ]
+  },
+  "vs_control": {
+    "n_reference": 84,
+    "n_current": 66,
+    "checks": [
+      {
+        "feature": "prompt_words",
+        "kind": "input",
+        "method": "K-S p_value",
+        "score": 0.1695,
+        "drifted": false
+      },
+      {
+        "feature": "prompt_embedding",
+        "kind": "input",
+        "method": "model ROC AUC",
+        "score": 0.4513,
+        "drifted": false
+      },
+      {
+        "feature": "answer_words",
+        "kind": "output",
+        "method": "K-S p_value",
+        "score": 0.2314,
+        "drifted": false
+      },
+      {
+        "feature": "ttft_ms",
+        "kind": "output",
+        "method": "K-S p_value, median +0%",
+        "score": 0.3935,
+        "drifted": false
+      },
+      {
+        "feature": "answer_empty",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      },
+      {
+        "feature": "refusal",
+        "kind": "output",
+        "method": "Z-test p_value",
+        "score": 1.0,
+        "drifted": false
+      }
+    ]
+  },
+  "verdict": {
+    "level": "shift",
+    "reasons": [
+      "drift vs the baseline, but the control (blue) shows it too: the users or the environment changed, not green's model (input ['prompt_words', 'prompt_embedding'], output ['answer_words'])"
+    ]
+  }
+}

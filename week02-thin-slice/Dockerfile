@@ -26,10 +26,11 @@ WORKDIR /app
 # Dependency files first. Docker caches each step, so this slow install is re-run only when
 # pyproject.toml or uv.lock change, not on every code edit. (Same idea as Jib's separate dependency layer.)
 COPY pyproject.toml uv.lock ./
-# uv.lock also lists promptclean (Week 4), a package installed from a local folder. `uv sync --locked` must read
-# its metadata to check the lockfile is current, even though this image never installs it. Its pyproject.toml is
+# uv.lock also lists promptclean (Week 4) and gateway, packages installed from local folders. `uv sync --locked` must read
+# their metadata to check the lockfile is current, even though this image installs neither. Their pyproject.toml is
 # enough: nothing is compiled here. (Without it the build fails with "Failed to generate package metadata".)
 COPY week04-cpp-cleaner/pyproject.toml ./week04-cpp-cleaner/pyproject.toml
+COPY gateway/pyproject.toml ./gateway/pyproject.toml
 
 # --locked: fail if uv.lock is out of date, so the image has exactly the pinned versions.
 # --no-dev: leave out ruff, pytest and friends. --group week02: the server plus torch and transformers.

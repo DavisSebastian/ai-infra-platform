@@ -1,0 +1,7 @@
+# Week 7's "silent failure": the same model as v1 with one well-meant change, a terser system prompt (shorter answers
+# cost less). It passes the keyword eval, so the gate lets it through, but its answers are very different. Drift
+# detection on live traffic is what should notice. Not meant for real use.
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+temperature: 0.7
+max_tokens: 64
+system_prompt: Reply in at most five words.

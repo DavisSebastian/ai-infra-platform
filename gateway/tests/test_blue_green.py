@@ -81,6 +81,16 @@ async def test_a_split_sends_traffic_to_both_and_health_counts_it(blue_green):
     assert (t["blue"]["routed"], t["green"]["routed"]) == (sides.count("blue"), sides.count("green"))
 
 
+async def test_health_says_when_the_split_last_changed(blue_green):
+    async with httpx.AsyncClient() as c:
+        before = (await c.get(f"{blue_green}/health")).json()["traffic_since"]
+        await set_green(blue_green, {"green": 10})
+        changed = (await c.get(f"{blue_green}/health")).json()["traffic_since"]
+        await set_green(blue_green, {"green": 10})  # the same split again: not a change
+        again = (await c.get(f"{blue_green}/health")).json()["traffic_since"]
+    assert before < changed == again
+
+
 async def test_setting_the_same_split_again_changes_nothing(blue_green):
     await set_green(blue_green, {"green": 10})
     assert (await set_green(blue_green, {"green": 10})).json()["changed"] is False

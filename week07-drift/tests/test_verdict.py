@@ -9,7 +9,7 @@ import json
 
 import pytest
 from drift import Check, DriftResult
-from verdict import ALERT, INSUFFICIENT, OK, WARN, decide
+from verdict import ALERT, INSUFFICIENT, OK, SHIFT, WARN, decide
 
 INPUTS = ("prompt_words", "prompt_embedding")
 OUTPUTS = ("answer_words", "ttft_ms", "answer_empty", "refusal")
@@ -63,10 +63,10 @@ def test_without_a_control_output_drift_with_input_drift_is_only_a_warning():
     assert decide(result("prompt_embedding", "answer_words", "ttft_ms")).level == WARN
 
 
-def test_both_sides_drifting_the_same_way_is_the_users_not_the_model():
+def test_both_sides_drifting_the_same_way_is_a_shift_not_the_model():
     # Green differs from the baseline, but not from blue over the same period: blue sees the same change.
     v = decide(result("prompt_embedding", "answer_words", "ttft_ms"), vs_control=result())
-    assert v.level == WARN
+    assert v.level == SHIFT
     assert any("blue" in r or "control" in r for r in v.reasons)
 
 

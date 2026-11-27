@@ -13,7 +13,7 @@
     uv run python week07-drift/scripts/drift_check.py --current week07-drift/data/scenario-c.parquet \
         --side green --against-side blue
 
-It ends with decide()'s verdict: insufficient_data / ok / warn / alert (Week 8 rolls back on alert).
+It ends with decide()'s verdict: insufficient_data / ok / shift / warn / alert (Week 8 rolls back on alert).
 The reference defaults to week07-drift/data/baseline.parquet. --html saves Evidently's report (histograms of every
 feature, reference vs current); --json saves the numbers for other tools (Week 8's rollback reads these).
 """

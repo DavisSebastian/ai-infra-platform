@@ -170,7 +170,7 @@ flowchart LR
   RS --> CW["current window<br/>last N, per side"]
   BL[("baseline window<br/>known-good traffic")] --> DC["drift_check.py<br/>features + Evidently"]
   CW --> DC
-  DC --> V["decide()<br/>ok / warn / alert"]
+  DC --> V["decide()<br/>ok / shift / warn / alert"]
   V -. "Week 8" .-> RB["automatic rollback"]
 </pre>
 <figcaption>Drift is a property of many requests, so nothing useful can be computed per request.</figcaption>
@@ -225,8 +225,9 @@ flowchart LR
 
 <section id="verdict">
 <h2><span class="num">5</span>Two signals before an alert</h2>
-<p class="sub"><code>decide()</code>: insufficient_data / ok / warn / alert. Week 8 rolls back on alert.</p>
+<p class="sub"><code>decide()</code>: insufficient_data / ok / shift / warn / alert. Week 8 rolls back on alert.</p>
 <p>Each check fires by chance about 1 time in 20. With four output checks, acting on any single one would roll back for nothing about 1 run in 5; requiring two brings that to about 1 in 71. So an alert needs <b>two output checks</b> differing from blue, or <b>one confirmed by both comparisons</b> (vs blue and vs the baseline). Input drift alone is only a warning, and below 50 records nothing is judged.</p>
+<p>Drift that blue shares gets its own verdict, <b>shift</b>: the users or the environment changed, and green is as good as blue. Week 8 showed why: under load, TTFT rose on <i>both</i> sides versus a baseline captured one request at a time, and treating that as a warning blocked every canary promotion.</p>
 <div class="callout gotcha"><b>Significant is not the same as important</b><p>The same model on the same Mac three days later: TTFT median 33.6 &rarr; 34.2 ms (+1.8%), and K-S gave p &lt; 0.0001, because the values are tightly clustered. A p-value says a difference is real, not that it matters. TTFT now also needs the median to move at least 20% (a different model moved it 68% in Week 5).</p></div>
 </section>
 
@@ -236,7 +237,7 @@ flowchart LR
 <div class="table-wrap"><table>
 <tr><th>Scenario</th><th>What changed</th><th>Verdict</th></tr>
 <tr><td><b>A&prime;</b> canary, nothing changed</td><td>both sides on v1, everyday questions</td><td><b>OK</b></td></tr>
-<tr><td><b>B</b> the users changed</td><td>coding questions to both sides (embedding AUC 0.95 vs baseline)</td><td><b>WARN</b>: blue shows it too</td></tr>
+<tr><td><b>B</b> the users changed</td><td>coding questions to both sides (embedding AUC 0.95 vs baseline)</td><td><b>SHIFT</b>: blue shows it too</td></tr>
 <tr><td><b>C</b> silent failure</td><td>green on card v3: "Reply in at most five words."</td><td><b>ALERT</b>: answer length differs from blue and the baseline</td></tr>
 </table></div>
 <p>Card v3 scored <b>100%</b> on the Week 5 keyword eval, better than v1's 90%: a five-word answer that contains the right keyword passes. On live traffic, answers fell from a median of 18 words to 6, with no errors and no refusals.</p>

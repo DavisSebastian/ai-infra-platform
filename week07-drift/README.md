@@ -13,7 +13,7 @@ Blue/Green, 50/50, both sides on the same Qwen2.5-0.5B server (Week 2's, on an M
 | Scenario | What changed | Verdict |
 |---|---|---|
 | **A′** canary, nothing changed | both sides on v1, everyday questions | **OK** |
-| **B** the users changed | coding questions, sent to both sides | **WARN**: blue shows it too, so not green's model |
+| **B** the users changed | coding questions, sent to both sides | **SHIFT**: blue shows it too, so not green's model |
 | **C** silent failure | green on card v3, everyday questions | **ALERT**: answer length differs from blue *and* from the baseline |
 
 How many requests green must serve before the alert holds (200 random windows per size, from scenario C; false alarms from scenario A′):
@@ -32,7 +32,7 @@ A change this large is clear after about 20 requests. `decide()` waits for **50*
 ```
 gateway (DRIFT_LOG=1) ──► Redis stream: one record per request (side, card, prompt, answer, timings)
 drift_check.py          ──► features per record ──► Evidently: reference window vs current window
-                        ──► decide(): insufficient_data / ok / warn / alert   (Week 8 rolls back on alert)
+                        ──► decide(): insufficient_data / ok / shift / warn / alert   (Week 8 rolls back on alert)
 ```
 
 **1. Record, don't compute.** The gateway puts each finished request on an in-memory queue; a background task writes it to a Redis stream. Requests never wait on it, and a Redis outage is counted, not felt (fail open). Measured: about +1 ms at p50. Code: [`gateway/src/gateway/request_log.py`](../gateway/src/gateway/request_log.py).
@@ -50,6 +50,8 @@ drift_check.py          ──► features per record ──► Evidently: refer
 **3. Blue is the control group.** During a canary the split is random per request, so blue and green serve the same users at the same time. Green differing from **blue** points at green's model; drift that blue shows too is the users (or the environment). Without that control, scenario B's longer answers would look like a model problem.
 
 **4. Two agreeing signals before an alert.** Each check fires by chance about 1 time in 20. With four output checks, *any one* firing happens about 1 run in 5; *two or more*, about 1 in 71. So an alert needs two output checks, or one check confirmed by both comparisons (vs blue and vs the baseline). Input drift alone is only a warning, never a rollback. Code: [scripts/verdict.py](scripts/verdict.py).
+
+**5. A shared shift is its own verdict.** If green differs from the baseline but blue shows the same difference, the verdict is **shift**: the users or the environment changed, and green is as good as blue. Week 8 found why this matters: under 2 requests/s the model server queues, TTFT rose on *both* sides versus a baseline captured one request at a time, and as a plain warning that blocked every canary promotion. Monitoring asks "is the world different from last week?"; a canary asks "is green as good as blue right now?".
 
 ## Things that bit, and what they taught
 

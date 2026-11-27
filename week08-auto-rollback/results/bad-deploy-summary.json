@@ -1,0 +1,12 @@
+{
+  "requests": 841,
+  "failed": 0,
+  "served_by_green": 50,
+  "green_cards": {
+    "3": 50
+  },
+  "green_share_while_canary": 0.124,
+  "deploy_to_last_green_request_s": 199.9,
+  "requests_after_rollback": 432,
+  "green_after_rollback": 0
+}

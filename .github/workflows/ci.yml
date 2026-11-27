@@ -250,3 +250,42 @@ jobs:
 
       - name: Run Week 7 drift tests
         run: uv run pytest -v week07-drift/tests
+
+  test-week08:
+    # The automatic rollback, end to end: a bad green deploy must be rolled back by the controller on its own, with
+    # zero failed requests. A rollback path that never runs is one that fails the day it's needed.
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      # The gateway (week03-serve) and Week 7's drift check without torch (week07-drift): the controller uses the
+      # stand-in embedding here.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group week03-serve --group week07-drift
+
+      - name: Run Week 8 unit tests (policy and controller, all dependencies faked)
+        run: uv run pytest -v week08-auto-rollback/tests
+
+      - name: Safety net - a bad deploy is rolled back automatically with no failed requests
+        run: uv run python week08-auto-rollback/scripts/ci_safety_net.py

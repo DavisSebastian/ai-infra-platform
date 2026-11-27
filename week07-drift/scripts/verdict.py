@@ -5,8 +5,15 @@
 
   INSUFFICIENT  a window is too small to judge (with 20 requests, everything looks random)
   OK            nothing drifted
-  WARN          something changed, but the evidence doesn't point at the model: tell a human, don't roll back
+  SHIFT         (Blue/Green only) green differs from the baseline, but blue shows the same difference over the same
+                period: the users or the environment changed, not green's model. Green is as good as blue, so a canary
+                may proceed; the shift is worth a human's attention (and maybe a fresh baseline)
+  WARN          something changed and green might be the cause, but the evidence is too thin: hold, tell a human
   ALERT         the evidence points at the model: Week 8 rolls back
+
+Why SHIFT is its own level (found in Week 8): monitoring asks "is the world different from last week?", a canary asks
+"is green as good as blue right now?". Under 2 requests/s the model server queues, so TTFT rose for BOTH sides versus
+a baseline captured one request at a time. As a WARN that blocked every promotion; as a SHIFT it doesn't.
 
 Two ideas decide where the line is:
 
@@ -27,7 +34,7 @@ from dataclasses import dataclass
 
 from drift import DriftResult
 
-INSUFFICIENT, OK, WARN, ALERT = "insufficient_data", "ok", "warn", "alert"
+INSUFFICIENT, OK, SHIFT, WARN, ALERT = "insufficient_data", "ok", "shift", "warn", "alert"
 MIN_RECORDS = 50
 
 
@@ -63,7 +70,7 @@ def decide(vs_baseline: DriftResult, vs_control: DriftResult | None = None, min_
         if inputs or outputs:
             reason = (f"drift vs the baseline, but the control (blue) shows it too: the users or the environment "
                       f"changed, not green's model (input {inputs}, output {outputs})")  # fmt: skip
-            return Verdict(WARN, (reason,))
+            return Verdict(SHIFT, (reason,))
         return Verdict(OK, ("no drift vs the baseline or the control",))
 
     # 3. One model server: no control group, so input drift explains output drift.

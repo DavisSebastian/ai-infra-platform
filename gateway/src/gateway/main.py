@@ -22,6 +22,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import aiohttp
 import anyio
@@ -142,6 +143,7 @@ def make_registry_client():
 async def lifespan(app: FastAPI):
     # Settings are checked FIRST, before any connection is opened: a typo in TRAFFIC_GREEN stops startup.
     app.state.split = split_from_env(TRAFFIC_GREEN)
+    app.state.split_since = now_iso()  # when the split last changed (Week 8: each canary step is judged on its own)
     if app.state.split.green and not GREEN_URL:
         raise ValueError(f"TRAFFIC_GREEN={app.state.split.green} sends traffic to green, but GREEN_URL is not set")
 
@@ -218,7 +220,13 @@ async def health(request: Request):
         "client": PROXY_CLIENT,
         "registry": registry_status(request.app),
         "traffic": traffic_status(request.app),
+        "traffic_since": request.app.state.split_since,
     }
+
+
+def now_iso() -> str:
+    """UTC, millisecond precision: the same format as the request log's timestamps, so they compare as strings."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def traffic_status(app: FastAPI) -> dict:
@@ -320,6 +328,8 @@ async def set_traffic(request: Request):
     old: TrafficSplit = request.app.state.split
     # The switch: one reference assignment, as in /admin/reload. Every request that starts after this line uses it.
     request.app.state.split = new
+    if new != old:
+        request.app.state.split_since = now_iso()
     if new != old:
         log.info("traffic: green %s%% -> %s%%", old.green, new.green)
     return {"green": new.green, "blue": new.blue, "previous": old.green, "changed": new != old}

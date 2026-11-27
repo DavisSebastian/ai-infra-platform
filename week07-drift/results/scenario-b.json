@@ -96,7 +96,7 @@
     ]
   },
   "verdict": {
-    "level": "warn",
+    "level": "shift",
     "reasons": [
       "drift vs the baseline, but the control (blue) shows it too: the users or the environment changed, not green's model (input ['prompt_words', 'prompt_embedding'], output ['answer_words'])"
     ]
